@@ -1,0 +1,20 @@
+[package]
+name = "coding01"
+version = "0.1.0"
+edition = "2021"
+description = "01 编码 — 轻量原生 AI 编码客户端(egui 原生绘制,接 NullClaw WebChannel)"
+
+[dependencies]
+eframe = "=0.27.2"
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+tungstenite = { version = "0.21.0", default-features = false, features = ["handshake"] }
+rfd = "0.14"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"
+codegen-units = 1

@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="01 编码 Logo(深色)">
+  <defs>
+    <linearGradient id="bgD" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0F2440"/>
+      <stop offset=".55" stop-color="#0B1830"/>
+      <stop offset="1" stop-color="#081020"/>
+    </linearGradient>
+    <linearGradient id="skyD" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#A5E3FF"/>
+      <stop offset=".45" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#0284C7"/>
+    </linearGradient>
+    <linearGradient id="grnD" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#CCFAE0"/>
+      <stop offset=".55" stop-color="#86EFAC"/>
+      <stop offset="1" stop-color="#2FCE8F"/>
+    </linearGradient>
+    <radialGradient id="glowD" cx=".5" cy=".52" r=".55">
+      <stop offset="0" stop-color="#38BDF8" stop-opacity=".22"/>
+      <stop offset=".55" stop-color="#38BDF8" stop-opacity=".06"/>
+      <stop offset="1" stop-color="#38BDF8" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shD" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="10" stdDeviation="18" flood-color="#0EA5E9" flood-opacity=".35"/>
+    </filter>
+  </defs>
+
+  <!-- 背景圆角方块 -->
+  <rect x="8" y="8" width="496" height="496" rx="112" fill="url(#bgD)"/>
+  <rect x="10" y="10" width="492" height="492" rx="110" fill="none" stroke="#7DD3FC" stroke-opacity=".18" stroke-width="2"/>
+  <ellipse cx="256" cy="270" rx="215" ry="185" fill="url(#glowD)"/>
+
+  <!-- 字形:0(天蓝渐变环)+ 1(浅绿光标笔画)+ 终端下划线光标 -->
+  <g transform="translate(40 0) skewX(-8)">
+    <g filter="url(#shD)">
+      <ellipse cx="170" cy="256" rx="91" ry="120" fill="none" stroke="url(#skyD)" stroke-width="54"/>
+      <path d="M364 140 V380" fill="none" stroke="url(#grnD)" stroke-width="54" stroke-linecap="round"/>
+      <path d="M360 141 L311 172" fill="none" stroke="url(#grnD)" stroke-width="44" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 200" width="600" height="200" role="img" aria-label="01 编码 一行式组合(深色底 · 主用)">
+  <defs>
+    <linearGradient id="h-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0F2440"/>
+      <stop offset=".55" stop-color="#0B1830"/>
+      <stop offset="1" stop-color="#081020"/>
+    </linearGradient>
+    <linearGradient id="h-sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#A5E3FF"/>
+      <stop offset=".45" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#0284C7"/>
+    </linearGradient>
+    <linearGradient id="h-grn" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#CCFAE0"/>
+      <stop offset=".55" stop-color="#86EFAC"/>
+      <stop offset="1" stop-color="#2FCE8F"/>
+    </linearGradient>
+    <radialGradient id="h-glow" cx=".5" cy=".52" r=".55">
+      <stop offset="0" stop-color="#38BDF8" stop-opacity=".22"/>
+      <stop offset=".55" stop-color="#38BDF8" stop-opacity=".06"/>
+      <stop offset="1" stop-color="#38BDF8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 图标 -->
+  <g transform="translate(20 18) scale(.32)">
+    <rect x="8" y="8" width="496" height="496" rx="112" fill="url(#h-bg)"/>
+    <rect x="10" y="10" width="492" height="492" rx="110" fill="none" stroke="#7DD3FC" stroke-opacity=".18" stroke-width="2"/>
+    <ellipse cx="256" cy="270" rx="215" ry="185" fill="url(#h-glow)"/>
+    <g transform="translate(40 0) skewX(-8)">
+      <ellipse cx="170" cy="256" rx="91" ry="120" fill="none" stroke="url(#h-sky)" stroke-width="54"/>
+      <path d="M364 140 V380" fill="none" stroke="url(#h-grn)" stroke-width="54" stroke-linecap="round"/>
+      <path d="M360 141 L311 172" fill="none" stroke="url(#h-grn)" stroke-width="44" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <!-- 字标:01 与「编码」同处一行(预览用系统字体,量产请转曲) -->
+  <text x="206" y="138" font-family="'Segoe UI','PingFang SC','Microsoft YaHei','Noto Sans SC',sans-serif" font-size="104" font-weight="800" letter-spacing="2">
+    <tspan fill="url(#h-sky)">01</tspan><tspan fill="#EAF4FA" dx="20">编码</tspan>
+  </text>
+</svg>

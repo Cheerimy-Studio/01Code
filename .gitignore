@@ -1,0 +1,7 @@
+# build artifacts
+apps/client/target/
+# local runtime logs & screenshots
+*.log
+apps/client/shots/
+# downloaded binaries (not part of source)
+downloads/
