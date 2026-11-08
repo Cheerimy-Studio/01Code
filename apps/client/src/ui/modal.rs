@@ -154,22 +154,41 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                             );
                         });
                     }
-                    ui.separator();
+                    ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if ui
                             .add_enabled(
                                 !model.is_busy(),
-                                egui::Button::new(RichText::new("保存并应用").color(t::WHITE))
-                                    .fill(t::TEXT)
-                                    .rounding(9.0),
+                                egui::Button::new(
+                                    RichText::new("保存并应用").size(12.5).color(t::WHITE),
+                                )
+                                .fill(t::TEXT)
+                                .rounding(9.0)
+                                .min_size(egui::vec2(112.0, 32.0)),
                             )
                             .clicked()
                             && model.settings.save()
                         {
                             model.apply_saved_settings();
                         }
+                        ui.add_space(14.0);
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("关闭").size(12.5).color(t::TEXT2),
+                                )
+                                .fill(t::WHITE)
+                                .stroke(egui::Stroke::new(1.0_f32, t::BORDER))
+                                .rounding(9.0)
+                                .min_size(egui::vec2(76.0, 32.0)),
+                            )
+                            .clicked()
+                        {
+                            close = true;
+                        }
+                        ui.add_space(14.0);
                         let status = if model.is_busy() {
-                            "任务结束或停止后可应用设置"
+                            "任务结束后可应用设置"
                         } else {
                             &model.settings.status
                         };
@@ -206,14 +225,19 @@ fn field(ui: &mut egui::Ui, label: &str, text: &mut String, password: bool, hint
 }
 
 fn upstreams(ui: &mut egui::Ui, model: &mut Model) {
-    ui.heading("上游与模型");
     ui.label(
-        RichText::new(
-            "每个上游独立保存地址、凭据和模型目录。支持 OpenAI Chat Completions 兼容接口。",
-        )
-        .color(t::MUTED),
+        RichText::new("上游与模型")
+            .size(15.0)
+            .color(t::TEXT)
+            .strong(),
     );
-    ui.add_space(12.0);
+    ui.add_space(2.0);
+    ui.label(
+        RichText::new("OpenAI Chat Completions 兼容")
+            .size(11.5)
+            .color(t::FAINT),
+    );
+    ui.add_space(14.0);
     let prefs = &mut model.settings.prefs;
     ui.horizontal(|ui| {
         egui::ComboBox::from_id_source("upstream_edit")
@@ -223,6 +247,7 @@ fn upstreams(ui: &mut egui::Ui, model: &mut Model) {
                     ui.selectable_value(&mut prefs.selected, i, &p.name);
                 }
             });
+        ui.add_space(8.0);
         if ui.button("＋ 添加上游").clicked() {
             let p = Upstream {
                 name: format!("上游 {}", prefs.upstreams.len() + 1),
@@ -231,6 +256,7 @@ fn upstreams(ui: &mut egui::Ui, model: &mut Model) {
             prefs.upstreams.push(p);
             prefs.selected = prefs.upstreams.len() - 1;
         }
+        ui.add_space(8.0);
         if ui
             .add_enabled(prefs.upstreams.len() > 1, egui::Button::new("移除"))
             .clicked()
@@ -239,7 +265,7 @@ fn upstreams(ui: &mut egui::Ui, model: &mut Model) {
             prefs.selected = prefs.selected.min(prefs.upstreams.len() - 1);
         }
     });
-    ui.add_space(10.0);
+    ui.add_space(14.0);
     let idx = prefs.selected;
     let p = &mut prefs.upstreams[idx];
     field(ui, "显示名称", &mut p.name, false, "例如：言灵中转");
@@ -254,19 +280,13 @@ fn upstreams(ui: &mut egui::Ui, model: &mut Model) {
     if p.endpoint_edited(&old) {
         model.settings.status = "上游主机改变，原凭据已清空，请重新填写".into();
     }
-    field(
-        ui,
-        "API Key",
-        &mut p.api_key,
-        true,
-        "本机配置保存；推荐使用下方环境变量",
-    );
+    field(ui, "API Key", &mut p.api_key, true, "sk-...");
     field(
         ui,
         "Key 环境变量（优先使用）",
         &mut p.key_env,
         false,
-        "例如 OPENAI_API_KEY，留空使用上方 Key",
+        "可选",
     );
     field(
         ui,
@@ -299,9 +319,9 @@ fn upstreams(ui: &mut egui::Ui, model: &mut Model) {
         model.settings.fetch_models();
     }
     ui.label(
-        RichText::new("保存后可在「网关管理」同步当前模型与全部上游到 NullClaw。")
-            .size(12.0)
-            .color(t::MUTED),
+        RichText::new("保存后同步到 NullClaw，重启网关生效。")
+            .size(11.5)
+            .color(t::FAINT),
     );
 }
 fn runtime(ui: &mut egui::Ui, model: &mut Model) {

@@ -12,9 +12,11 @@ use crate::widgets::{self, Chip};
 pub fn show(ctx: &egui::Context, model: &mut Model) {
     // ── 底部:输入卡 + 状态栏(面板停靠,永不截断;无分隔线) ──
     let bottom_h = if !model.pending.is_empty() {
-        212.0
-    } else {
         150.0
+    } else if model.steps() > 0 {
+        124.0
+    } else {
+        96.0
     };
     egui::TopBottomPanel::bottom("composer_panel")
         .exact_height(bottom_h)
@@ -865,7 +867,7 @@ fn composer(ui: &mut egui::Ui, model: &mut Model) {
         .fill(t::WHITE)
         .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0xE6, 0xEB, 0xF2)))
         .rounding(Rounding::same(18.0))
-        .inner_margin(egui::Margin::symmetric(14.0, 12.0))
+        .inner_margin(egui::Margin::symmetric(14.0, 10.0))
         .show(ui, |ui| {
             let modal_open = model.modal.is_some();
             // 待发送附件预览(图片缩略图 / 文件芯片,可移除)
@@ -966,7 +968,7 @@ fn composer(ui: &mut egui::Ui, model: &mut Model) {
                 egui::TextEdit::multiline(&mut model.input)
                     .id(input_id)
                     .hint_text("发消息或创建任务 · Enter 发送，Shift+Enter 换行")
-                    .desired_rows(2)
+                    .desired_rows(1)
                     .frame(false)
                     .desired_width(f32::INFINITY),
             );

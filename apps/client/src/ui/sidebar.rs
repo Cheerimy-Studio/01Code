@@ -17,6 +17,7 @@ fn session_row(
     clicks: &mut Vec<String>,
     edits: &mut Vec<(String, String)>,
     exports: &mut Vec<String>,
+    deletes: &mut Vec<String>,
 ) {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 34.0), Sense::click());
@@ -71,6 +72,14 @@ fn session_row(
             exports.push(s.sid.clone());
             ui.close_menu();
         }
+        ui.add_space(4.0);
+        if ui
+            .button(RichText::new("删除会话").color(t::DEL_TX))
+            .clicked()
+        {
+            deletes.push(s.sid.clone());
+            ui.close_menu();
+        }
     });
 }
 
@@ -109,6 +118,7 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
     let mut clicks: Vec<String> = Vec::new();
     let mut edits = Vec::new();
     let mut exports = Vec::new();
+    let mut deletes: Vec<String> = Vec::new();
     egui::SidePanel::left("left")
         .exact_width(if ctx.screen_rect().width() < 820.0 {
             200.0
@@ -120,7 +130,12 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
             egui::Frame::none()
                 .fill(t::PANEL)
                 .stroke(Stroke::new(1.0_f32, t::BORDER))
-                .inner_margin(egui::Margin::same(14.0)),
+                .inner_margin(egui::Margin {
+                    left: 14.0,
+                    right: 14.0,
+                    top: 14.0,
+                    bottom: 0.0,
+                }),
         )
         .show(ctx, |ui| {
             // 品牌行:手动绘制,logo / 名称 / 徽标全部垂直居中
@@ -233,7 +248,7 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
             }
 
             // 会话列表(为底部用户行预留高度,避免被挤压截断)
-            let user_h = 46.0;
+            let user_h = 56.0;
             let scroll_h = (ui.available_height() - user_h).max(60.0);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -253,7 +268,15 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                         for idx in idxs {
                             let s = &sessions[idx];
                             let selected = s.sid == model.active_sid;
-                            session_row(ui, s, selected, &mut clicks, &mut edits, &mut exports);
+                            session_row(
+                                ui,
+                                s,
+                                selected,
+                                &mut clicks,
+                                &mut edits,
+                                &mut exports,
+                                &mut deletes,
+                            );
                         }
                     }
                     if sessions.is_empty() {
@@ -310,5 +333,8 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
             }
         }
         model.save_history();
+    }
+    for sid in deletes {
+        model.delete_session(&sid);
     }
 }

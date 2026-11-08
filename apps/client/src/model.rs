@@ -1383,6 +1383,26 @@ impl Model {
         self.last_elapsed = None;
         self.todo = self.plans.get(sid).cloned().unwrap_or_default();
     }
+
+    /// 删除会话(含记录/计划/历史),必要时切换到剩余会话
+    pub fn delete_session(&mut self, sid: &str) {
+        if self.is_busy() {
+            return;
+        }
+        self.sessions.retain(|s| s.sid != sid);
+        self.transcripts.remove(sid);
+        self.api_history.remove(sid);
+        self.plans.remove(sid);
+        if self.active_sid == sid {
+            if let Some(first) = self.sessions.first() {
+                self.active_sid = first.sid.clone();
+                self.todo = self.plans.get(&self.active_sid).cloned().unwrap_or_default();
+            } else {
+                self.new_task();
+            }
+        }
+        self.save_history();
+    }
 }
 
 fn thumbnail_texture(ctx: &egui::Context, bytes: &[u8], name: &str) -> Option<TextureHandle> {
