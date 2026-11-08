@@ -5,20 +5,16 @@ use crate::{
 };
 use eframe::egui::{self, RichText, Vec2};
 
-const SETTING_TABS: [&str; 6] = [
-    "上游与模型",
-    "运行模式",
-    "Agent 预设",
-    "网关管理",
-    "更新与存储",
-    "任务与扩展",
+const SETTING_TABS: [(&str, usize); 4] = [
+    ("上游与模型", 0),
+    ("网关管理", 3),
+    ("更新与存储", 4),
+    ("任务与扩展", 5),
 ];
 fn settings_content(ui: &mut egui::Ui, model: &mut Model) {
     match model.settings.tab {
         0 => upstreams(ui, model),
-        1 => runtime(ui, model),
-        2 => presets(ui, model),
-        3 => gateway(ui, model),
+        1 | 2 | 3 => gateway(ui, model),
         4 => updates(ui, model),
         _ => tasks(ui, model),
     }
@@ -27,6 +23,10 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
     let Some(modal) = model.modal.clone() else {
         return;
     };
+    // 直连模式与 Agent 预设已隐藏,回落到首个标签
+    if matches!(model.settings.tab, 1 | 2) {
+        model.settings.tab = 0;
+    }
     let screen = ctx.screen_rect();
     let size = Vec2::new(
         (screen.width() - 40.0).min(960.0),
@@ -89,8 +89,8 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                             .id_source("settings_tabs")
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    for (i, label) in SETTING_TABS.iter().enumerate() {
-                                        ui.selectable_value(&mut model.settings.tab, i, *label);
+                                    for (label, idx) in SETTING_TABS.iter() {
+                                        ui.selectable_value(&mut model.settings.tab, *idx, *label);
                                     }
                                 });
                             });
@@ -112,8 +112,8 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                                     egui::ScrollArea::vertical().max_height(height).show(
                                         ui,
                                         |ui| {
-                                            for (i, label) in SETTING_TABS.iter().enumerate() {
-                                                let selected = model.settings.tab == i;
+                                            for (label, idx) in SETTING_TABS.iter() {
+                                                let selected = model.settings.tab == *idx;
                                                 if ui
                                                     .add_sized(
                                                         [156.0, 42.0],
@@ -128,7 +128,7 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                                                     )
                                                     .clicked()
                                                 {
-                                                    model.settings.tab = i;
+                                                    model.settings.tab = *idx;
                                                 }
                                             }
                                         },
@@ -299,7 +299,7 @@ fn upstreams(ui: &mut egui::Ui, model: &mut Model) {
         model.settings.fetch_models();
     }
     ui.label(
-        RichText::new("直连模式即时切换；NullClaw 可在「网关管理」同步当前模型与全部上游。")
+        RichText::new("保存后可在「网关管理」同步当前模型与全部上游到 NullClaw。")
             .size(12.0)
             .color(t::MUTED),
     );

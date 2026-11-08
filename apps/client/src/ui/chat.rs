@@ -69,25 +69,46 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                             let content_width = ui.available_width();
                             ui.set_max_width(content_width);
                             let mut clicks: Vec<(String, bool)> = Vec::new();
+                            let mut start_new = false;
                             let items = model.transcript();
                             let n = items.len();
                             if n == 0 {
-                                ui.add_space(50.0);
-                                ui.heading("开始新任务");
-                                ui.add_space(10.0);
-                                ui.label(
-                                    RichText::new(if model.gateway_mode {
-                                        "连接 NullClaw，开始你的项目任务。"
-                                    } else {
-                                        "描述你的需求，或在设置中启用 Agent 来处理项目文件。"
-                                    })
-                                    .color(t::MUTED),
-                                );
-                                ui.add_space(12.0);
-                                ui.label(
-                                    RichText::new("先在「模型」中配置上游地址、API Key 和模型。")
-                                        .color(t::MUTED),
-                                );
+                                ui.add_space(70.0);
+                                ui.vertical_centered(|ui| {
+                                    let (logo_rect, _) = ui
+                                        .allocate_exact_size(Vec2::splat(46.0), Sense::hover());
+                                    crate::logo::paint_tile(ui.painter(), logo_rect);
+                                    ui.add_space(12.0);
+                                    ui.label(
+                                        RichText::new("01 编码")
+                                            .size(21.0)
+                                            .color(t::TEXT)
+                                            .strong(),
+                                    );
+                                    ui.add_space(6.0);
+                                    ui.label(
+                                        RichText::new("经由 NullClaw 网关运行的编码助手")
+                                            .size(12.5)
+                                            .color(t::FAINT),
+                                    );
+                                    ui.add_space(18.0);
+                                    if ui
+                                        .add_sized(
+                                            [132.0, 34.0],
+                                            Button::new(
+                                                RichText::new("＋ 新会话")
+                                                    .size(13.0)
+                                                    .color(t::TEXT),
+                                            )
+                                            .fill(t::WHITE)
+                                            .stroke(Stroke::new(1.0_f32, t::BORDER))
+                                            .rounding(Rounding::same(9.0)),
+                                        )
+                                        .clicked()
+                                    {
+                                        start_new = true;
+                                    }
+                                });
                             }
                             for (i, item) in items.iter().enumerate() {
                                 if model.trace_view && matches!(item, Item::User(_) | Item::Ai(_)) {
@@ -119,6 +140,9 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                             ui.add_space(10.0);
                             for (rid, ok) in clicks {
                                 model.respond_approval(&rid, ok);
+                            }
+                            if start_new {
+                                model.new_task();
                             }
                         });
                 });
@@ -189,9 +213,17 @@ fn header(ui: &mut egui::Ui, model: &mut Model) {
             }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
+                let steps = model.steps();
                 for (value, label) in [
                     (false, "对话".to_string()),
-                    (true, format!("轨迹 · {}", model.steps())),
+                    (
+                        true,
+                        if steps > 0 {
+                            format!("轨迹 · {}", steps)
+                        } else {
+                            "轨迹".to_string()
+                        },
+                    ),
                 ] {
                     let selected = model.trace_view == value;
                     let response = ui.add(
@@ -212,18 +244,6 @@ fn header(ui: &mut egui::Ui, model: &mut Model) {
                         );
                     }
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let label = if model.demo {
-                        "演示模式"
-                    } else if model.gateway_mode {
-                        "NullClaw"
-                    } else if model.runtime.agent {
-                        "Agent · 审批执行"
-                    } else {
-                        "对话"
-                    };
-                    widgets::chip(ui, label, Chip::Plain);
-                });
             });
             ui.separator();
         });
@@ -945,7 +965,7 @@ fn composer(ui: &mut egui::Ui, model: &mut Model) {
             let resp = ui.add(
                 egui::TextEdit::multiline(&mut model.input)
                     .id(input_id)
-                    .hint_text("描述需求，或添加文件 · Enter 发送，Shift+Enter 换行")
+                    .hint_text("发消息或创建任务 · Enter 发送，Shift+Enter 换行")
                     .desired_rows(2)
                     .frame(false)
                     .desired_width(f32::INFINITY),
@@ -984,23 +1004,11 @@ fn composer(ui: &mut egui::Ui, model: &mut Model) {
                         }
                     }
                 }
-                if !model.gateway_mode && !model.demo {
-                    let before = model.runtime.agent;
-                    ui.add_enabled(
-                        !model.is_busy(),
-                        egui::Checkbox::new(&mut model.runtime.agent, "Agent"),
-                    );
-                    if before != model.runtime.agent {
-                        model.settings.prefs = model.runtime.clone();
-                        let _ = model.runtime.save();
-                    }
-                } else {
-                    widgets::chip(
-                        ui,
-                        if model.demo { "演示" } else { "NullClaw" },
-                        Chip::Plain,
-                    );
-                }
+                widgets::chip(
+                    ui,
+                    if model.demo { "演示" } else { "NullClaw" },
+                    Chip::Plain,
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let busy = model.is_busy();
                     let send = ui.add_sized(
@@ -1020,69 +1028,6 @@ fn composer(ui: &mut egui::Ui, model: &mut Model) {
                             model.user_submit();
                         }
                     }
-                    if ui.available_width() > 140.0 {
-                        if model.gateway_mode {
-                            ui.label(RichText::new("由网关选择模型").size(12.0).color(t::MUTED));
-                        } else {
-                            let selected = model.runtime.selected;
-                            let old_model = model.runtime.active().model.clone();
-                            ui.add_enabled_ui(!busy, |ui| {
-                                egui::ComboBox::from_id_source("composer_model")
-                                    .width(170.0)
-                                    .selected_text({
-                                        let label = format!(
-                                            "{} · {}",
-                                            model.runtime.active().name,
-                                            model.runtime.active().model
-                                        );
-                                        if label.chars().count() > 28 {
-                                            format!(
-                                                "{}…",
-                                                label.chars().take(27).collect::<String>()
-                                            )
-                                        } else {
-                                            label
-                                        }
-                                    })
-                                    .show_ui(ui, |ui| {
-                                        for (i, p) in model.runtime.upstreams.iter_mut().enumerate()
-                                        {
-                                            ui.label(RichText::new(&p.name).strong());
-                                            if ui
-                                                .selectable_label(
-                                                    i == model.runtime.selected,
-                                                    &p.model,
-                                                )
-                                                .clicked()
-                                            {
-                                                model.runtime.selected = i;
-                                            }
-                                            for id in p.models.clone() {
-                                                if ui
-                                                    .selectable_label(
-                                                        i == model.runtime.selected
-                                                            && p.model == id,
-                                                        &id,
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    model.runtime.selected = i;
-                                                    p.model = id;
-                                                }
-                                            }
-                                            ui.separator();
-                                        }
-                                    });
-                            });
-                            if selected != model.runtime.selected
-                                || old_model != model.runtime.active().model
-                            {
-                                model.model_name = model.runtime.active().model.clone();
-                                model.settings.prefs = model.runtime.clone();
-                                let _ = model.runtime.save();
-                            }
-                        }
-                    }
                 });
             });
         });
@@ -1095,32 +1040,36 @@ fn status_bar(ui: &mut egui::Ui, model: &Model) {
                 .size(11.0)
                 .color(t::DEL_TX),
         );
+        return;
     }
     let steps = model.steps();
-
-    let pct = (model.ctx_used / model.ctx_limit.max(1.0) * 100.0) as u32;
+    let busy = model.is_busy();
+    // 空闲且无统计信息时隐藏状态栏(保持界面干净)
+    if !busy && steps == 0 && model.ctx_used <= 0.0 {
+        return;
+    }
     ui.add_space(6.0);
     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-        ui.label(
-            RichText::new(format!(
-                "{} · {} 次工具调用 · {}",
-                if model.is_busy() {
-                    "生成中"
-                } else {
-                    "就绪"
-                },
-                steps,
-                if model.ctx_used <= 0.0 {
-                    "用量待上游返回".into()
-                } else if model.ctx_limit > 0.0 {
-                    format!("上下文 {}k ({}%)", (model.ctx_used / 1000.0) as u32, pct)
-                } else {
-                    format!("最近请求 {} tokens", model.ctx_used as u32)
-                }
-            ))
-            .size(11.5)
-            .color(t::FAINT),
-        );
+        let text = if busy {
+            format!("生成中 · 用时 {} 秒", model.busy_secs())
+        } else {
+            let mut parts: Vec<String> = Vec::new();
+            if steps > 0 {
+                parts.push(format!("{} 次工具调用", steps));
+            }
+            if model.ctx_used > 0.0 && model.ctx_limit > 0.0 {
+                let pct = (model.ctx_used / model.ctx_limit * 100.0) as u32;
+                parts.push(format!(
+                    "上下文 {}k ({}%)",
+                    (model.ctx_used / 1000.0) as u32,
+                    pct
+                ));
+            }
+            parts.join(" · ")
+        };
+        if !text.is_empty() {
+            ui.label(RichText::new(text).size(11.5).color(t::FAINT));
+        }
     });
     ui.add_space(8.0);
 }

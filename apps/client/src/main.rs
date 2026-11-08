@@ -24,6 +24,9 @@ use transport::Transport;
 struct App {
     model: Model,
     transport: Box<dyn Transport>,
+    /// 请求的窗口逻辑尺寸(首帧用于对齐 winit 认知与实际窗口)
+    requested_size: [f32; 2],
+    resized: bool,
 
     /// 测试钩子:环境变量 CODING01_SEND 启动后自动提交一条消息
     autosend: Option<String>,
@@ -55,9 +58,12 @@ impl App {
             }
             _ => {}
         }
+        let [w, h] = fit_size(1280.0, 800.0);
         Self {
             model,
             transport,
+            requested_size: [w, h],
+            resized: false,
 
             autosend: std::env::var("CODING01_SEND").ok(),
             autosend_at: None,
@@ -77,6 +83,12 @@ impl eframe::App for App {
         self.model.gateway.shutdown();
     }
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 首帧硬同步窗口物理尺寸 = 画布逻辑 × ppp(修复创建期 DPI 感知切换错位)
+        if !self.resized {
+            self.resized = true;
+            let ppp = ctx.pixels_per_point();
+            force_window_size(self.requested_size[0] * ppp, self.requested_size[1] * ppp);
+        }
         if self.model.gateway.poll() && self.model.gateway_mode && !self.model.is_busy() {
             self.model.request_reconnect = true;
         }
@@ -160,14 +172,11 @@ impl eframe::App for App {
 }
 
 fn make_transport(model: &Model) -> Box<dyn Transport> {
-    if model.runtime.mode == "nullclaw" {
-        Box::new(transport::ws::Ws::connect(
-            &model.runtime_connection,
-            &model.active_sid,
-        ))
-    } else {
-        Box::new(transport::direct::Direct::new(model.runtime.clone()))
-    }
+    // 强制经由 NullClaw WebChannel;不再支持内置直连 Agent
+    Box::new(transport::ws::Ws::connect(
+        &model.runtime_connection,
+        &model.active_sid,
+    ))
 }
 
 fn setup_style(ctx: &egui::Context) {
@@ -235,10 +244,117 @@ fn load_font(names: &[&str]) -> Option<Vec<u8>> {
     None
 }
 
+/// 必须在创建窗口前开启 DPI 感知:否则 winit 在创建之后切换感知,
+/// 会导致「egui 画布逻辑尺寸 ≠ 实际窗口物理尺寸」(底部面板画出窗外)
+#[cfg(windows)]
+fn enable_dpi_awareness() {
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetProcessDPIAware() -> i32;
+    }
+    unsafe {
+        SetProcessDPIAware();
+    }
+}
+
+#[cfg(not(windows))]
+fn enable_dpi_awareness() {}
+
+/// 依据物理工作区计算不越界的窗口物理尺寸
+#[cfg(windows)]
+fn fit_size(w: f32, h: f32) -> [f32; 2] {
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetSystemMetrics(n: i32) -> i32;
+        fn GetDpiForSystem() -> u32;
+    }
+    // SM_CXFULLSCREEN / SM_CYFULLSCREEN:工作区(去掉任务栏)物理像素
+    let px_w = unsafe { GetSystemMetrics(16) } as f32;
+    let px_h = unsafe { GetSystemMetrics(17) } as f32;
+    let dpi = unsafe { GetDpiForSystem() } as f32;
+    if dpi < 1.0 {
+        return [w, h];
+    }
+    let scale = (dpi / 96.0).max(1.0);
+    [w.min(px_w / scale * 0.96), h.min(px_h / scale * 0.94)]
+}
+
+#[cfg(not(windows))]
+fn fit_size(w: f32, h: f32) -> [f32; 2] {
+    [w, h]
+}
+
+/// 绕过 winit,直接把 OS 窗口客户区调整为 winit 认知的物理尺寸
+#[cfg(windows)]
+fn force_window_size(client_w: f32, client_h: f32) {
+    #[link(name = "user32")]
+    extern "system" {
+        fn FindWindowW(cls: *const u16, title: *const u16) -> isize;
+        fn GetClientRect(h: isize, r: *mut RectI) -> i32;
+        fn GetWindowRect(h: isize, r: *mut RectI) -> i32;
+        fn SetWindowPos(
+            h: isize,
+            after: isize,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> i32;
+    }
+    #[repr(C)]
+    struct RectI {
+        l: i32,
+        t: i32,
+        r: i32,
+        b: i32,
+    }
+    unsafe {
+        let mut title: Vec<u16> = "01 编码".encode_utf16().collect();
+        title.push(0);
+        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        if hwnd == 0 {
+            return;
+        }
+        let mut cli = RectI {
+            l: 0,
+            t: 0,
+            r: 0,
+            b: 0,
+        };
+        let mut outer = RectI {
+            l: 0,
+            t: 0,
+            r: 0,
+            b: 0,
+        };
+        if GetClientRect(hwnd, &mut cli) == 0 || GetWindowRect(hwnd, &mut outer) == 0 {
+            return;
+        }
+        // 外框与客户区的边框差(标题栏 + 边缘)
+        let dx = (outer.r - outer.l) - (cli.r - cli.l);
+        let dy = (outer.b - outer.t) - (cli.b - cli.t);
+        const SWP_NOZORDER: u32 = 0x0004;
+        SetWindowPos(
+            hwnd,
+            0,
+            120,
+            60,
+            (client_w + dx as f32) as i32,
+            (client_h + dy as f32) as i32,
+            SWP_NOZORDER,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn force_window_size(_w: f32, _h: f32) {}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     if updater::handle_update_cli() {
         return Ok(());
     }
+    enable_dpi_awareness();
     std::fs::create_dir_all(config::app_dir())?;
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
@@ -255,7 +371,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .show();
         return Ok(());
     }
-    let [w, h] = [1280.0, 800.0];
+    let [w, h] = fit_size(1280.0, 800.0);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("01 编码")

@@ -165,7 +165,13 @@ impl Model {
     /// seed_demo=false 时连接真实网关,侧栏从空开始
     pub fn new(seed_demo: bool) -> Self {
         let now = chrono::Local::now().timestamp().max(0) as u64;
-        let settings = SettingsState::load();
+        let mut settings = SettingsState::load();
+        // 强制经由 NullClaw 网关运行:禁用内置直连 Agent 与直连模式
+        if settings.prefs.mode != "nullclaw" || settings.prefs.agent {
+            settings.prefs.mode = "nullclaw".into();
+            settings.prefs.agent = false;
+            let _ = settings.prefs.save();
+        }
         let model_name = if settings.prefs.active().model.is_empty() {
             "deepseek-chat".to_string()
         } else {
