@@ -383,6 +383,9 @@ fn settings_window(ctx: &egui::Context, model: &mut Model) {
                                         let _ =
                                             open::that(crate::runtime::home().join("runtime.log"));
                                     }
+                                    if ui.button("打开安装日志").clicked() {
+                                        let _ = open::that(crate::runtime::install_log_path());
+                                    }
                                     if ui.button("打开工作区").clicked() {
                                         let dir = crate::runtime::home().join("workspace");
                                         let _ = std::fs::create_dir_all(&dir);

@@ -25,6 +25,90 @@ pub fn installed() -> Option<String> {
     let p = bin();
     p.is_file().then(|| p.to_string_lossy().into_owned())
 }
+
+/// 安装日志文件(独立于运行时日志,便于排查下载/校验问题)
+pub fn install_log_path() -> PathBuf {
+    crate::config::data_dir().join("runtime-install.log")
+}
+
+fn log_install(line: &str) {
+    use std::io::Write;
+    let path = install_log_path();
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(
+            f,
+            "[{}] {}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            line
+        );
+    }
+}
+
+/// 国内 GitHub 加速镜像(前缀形式);CODING01_GH_MIRROR 可覆盖并优先使用
+const GH_MIRRORS: [&str; 5] = [
+    "https://ghfast.top/",
+    "https://gh-proxy.com/",
+    "https://ghproxy.net/",
+    "https://mirror.ghproxy.com/",
+    "https://gh.llkk.cc/",
+];
+
+fn mirror_urls(url: &str) -> Vec<String> {
+    let mut list = vec![url.to_string()];
+    let mut prefixes = Vec::new();
+    if let Ok(m) = std::env::var("CODING01_GH_MIRROR") {
+        let m = m.trim();
+        if !m.is_empty() {
+            prefixes.push(if m.ends_with('/') {
+                m.to_string()
+            } else {
+                format!("{m}/")
+            });
+        }
+    }
+    for m in GH_MIRRORS {
+        prefixes.push(m.to_string());
+    }
+    for p in prefixes {
+        list.push(format!("{p}{url}"));
+    }
+    list
+}
+
+fn probe_binary(path: &std::path::Path) -> Result<(), String> {
+    let mut cmd = Command::new(path);
+    cmd.arg("--version").stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err("安装文件无法运行".into())
+                };
+            }
+            Ok(None) if started.elapsed().as_secs() > 10 => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("安装文件运行超时".into());
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
 pub fn command() -> Command {
     let mut c = Command::new(bin());
     c.env("NULLCLAW_HOME", home());
@@ -151,15 +235,60 @@ pub fn install(update: bool) -> Result<String, String> {
         "nullclaw-{os}-{arch}.{}",
         if cfg!(windows) { "exe" } else { "bin" }
     );
+    log_install(&format!(
+        "install start: update={} target={} at {}",
+        update,
+        name,
+        bin().display()
+    ));
     let http = crate::gateway::http()?;
-    let release: Value = http
-        .get("https://api.github.com/repos/nullclaw/nullclaw/releases/latest")
-        .send()
-        .map_err(|e| format!("{e:?}"))?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json()
-        .map_err(|e| e.to_string())?;
+    let api = std::env::var("CODING01_RELEASE_API")
+        .ok()
+        .filter(|u| u.starts_with("https://"))
+        .unwrap_or_else(|| {
+            "https://api.github.com/repos/nullclaw/nullclaw/releases/latest".into()
+        });
+    let mut release: Option<Value> = None;
+    let mut api_errors: Vec<String> = Vec::new();
+    for candidate in mirror_urls(&api) {
+        log_install(&format!("release api attempt: {candidate}"));
+        match http.get(&candidate).send() {
+            Ok(resp) => match resp.error_for_status() {
+                Ok(resp) => match resp.json::<Value>() {
+                    Ok(v) => {
+                        log_install(&format!(
+                            "release api ok: {}",
+                            v["tag_name"].as_str().unwrap_or("?")
+                        ));
+                        release = Some(v);
+                        break;
+                    }
+                    Err(e) => {
+                        let msg = format!("解析失败:{e}");
+                        log_install(&format!("release api bad json: {msg}"));
+                        api_errors.push(msg);
+                    }
+                },
+                Err(e) => {
+                    let msg = format!("{e}");
+                    log_install(&format!("release api http error: {msg}"));
+                    api_errors.push(msg);
+                }
+            },
+            Err(e) => {
+                let msg = format!("{e:?}");
+                log_install(&format!("release api network error: {msg}"));
+                api_errors.push(msg);
+            }
+        }
+    }
+    let release = release.ok_or_else(|| {
+        let detail = api_errors.last().cloned().unwrap_or_default();
+        format!(
+            "无法获取 NullClaw 发布信息(已尝试国内镜像):{detail};详见安装日志 {}",
+            install_log_path().display()
+        )
+    })?;
     let asset = release["assets"]
         .as_array()
         .and_then(|a| a.iter().find(|a| a["name"] == name))
@@ -176,17 +305,15 @@ pub fn install(update: bool) -> Result<String, String> {
         .ok_or("发布文件缺少 SHA-256 校验值")?;
     use std::io::Read;
     let download = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(180))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(300))
         .user_agent(crate::gateway::CLIENT)
+        // 镜像站点会跨域重定向,统一只允许 https 且限制次数;内容由 SHA-256 校验兜底
         .redirect(reqwest::redirect::Policy::custom(|a| {
-            if a.previous().len() >= 5 {
+            if a.previous().len() >= 6 {
                 return a.error("redirect limit");
             }
-            let u = a.url();
-            let host = u.host_str().unwrap_or("");
-            if u.scheme() == "https"
-                && (host == "github.com" || host.ends_with(".githubusercontent.com"))
-            {
+            if a.url().scheme() == "https" {
                 a.follow()
             } else {
                 a.stop()
@@ -194,20 +321,60 @@ pub fn install(update: bool) -> Result<String, String> {
         }))
         .build()
         .map_err(|e| e.to_string())?;
-    let response = download
-        .get(url)
-        .send()
-        .map_err(|e| format!("{e:?}"))?
-        .error_for_status()
-        .map_err(|e| e.to_string())?;
-    let mut bytes = Vec::new();
-    response
-        .take(100 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() > 100 * 1024 * 1024 || format!("{:x}", Sha256::digest(&bytes)) != expected {
-        return Err("安装文件校验失败".into());
+    let mut bytes: Option<Vec<u8>> = None;
+    let mut download_errors: Vec<String> = Vec::new();
+    let candidates = mirror_urls(url);
+    log_install(&format!("asset candidates: {}", candidates.len()));
+    for candidate in candidates {
+        log_install(&format!("asset attempt: {candidate}"));
+        match download.get(&candidate).send() {
+            Ok(resp) => {
+                let status = resp.status();
+                if !status.is_success() {
+                    let msg = format!("HTTP {}", status.as_u16());
+                    log_install(&format!("asset http error: {msg}"));
+                    download_errors.push(msg);
+                    continue;
+                }
+                let mut buf = Vec::new();
+                if let Err(e) = resp.take(100 * 1024 * 1024 + 1).read_to_end(&mut buf) {
+                    let msg = format!("读取中断:{e}");
+                    log_install(&format!("asset read error: {msg}"));
+                    download_errors.push(msg);
+                    continue;
+                }
+                if buf.len() > 100 * 1024 * 1024 {
+                    log_install("asset too large");
+                    download_errors.push("文件过大".into());
+                    continue;
+                }
+                let sha = format!("{:x}", Sha256::digest(&buf));
+                if sha != expected {
+                    log_install(&format!(
+                        "asset sha mismatch: got={sha} want={expected} bytes={}",
+                        buf.len()
+                    ));
+                    download_errors.push("校验失败".into());
+                    continue;
+                }
+                log_install(&format!("asset ok: {} bytes sha={sha}", buf.len()));
+                bytes = Some(buf);
+                break;
+            }
+            Err(e) => {
+                let msg = format!("{e:?}");
+                log_install(&format!("asset network error: {msg}"));
+                download_errors.push(msg);
+            }
+        }
     }
+    let bytes = bytes.ok_or_else(|| {
+        let detail = download_errors.last().cloned().unwrap_or_default();
+        format!(
+            "下载失败(已尝试 GitHub 与国内镜像):{detail};详见安装日志 {}",
+            install_log_path().display()
+        )
+    })?;
     let dst = bin();
     std::fs::create_dir_all(dst.parent().unwrap()).map_err(|e| e.to_string())?;
     let tmp = dst.with_extension(if cfg!(windows) {
@@ -222,14 +389,14 @@ pub fn install(update: bool) -> Result<String, String> {
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700))
             .map_err(|e| e.to_string())?;
     }
-    let probe = Command::new(&tmp)
-        .arg("--version")
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !probe.status.success() {
-        return Err("安装文件无法运行".into());
+    if let Err(e) = probe_binary(&tmp) {
+        let _ = std::fs::remove_file(&tmp);
+        log_install(&format!("probe failed: {e}"));
+        return Err(e);
     }
+    log_install("probe ok");
     stop()?;
+    log_install("runtime stopped");
     let old = dst.with_extension("previous");
     if old.exists() {
         std::fs::remove_file(&old).map_err(|e| e.to_string())?;
@@ -239,14 +406,15 @@ pub fn install(update: bool) -> Result<String, String> {
     }
     if let Err(e) = std::fs::rename(&tmp, &dst) {
         if old.exists() {
-            let _ = std::fs::rename(old, dst);
+            let _ = std::fs::rename(&old, &dst);
         }
+        let _ = std::fs::remove_file(&tmp);
+        log_install(&format!("replace failed: {e}"));
         return Err(e.to_string());
     }
-    Ok(format!(
-        "NullClaw {}",
-        release["tag_name"].as_str().unwrap_or("")
-    ))
+    let version = release["tag_name"].as_str().unwrap_or("").to_string();
+    log_install(&format!("installed: {} -> {}", version, dst.display()));
+    Ok(format!("NullClaw {}", version))
 }
 pub fn configure(base: &str, model: &str, workspace_only: bool) -> Result<(), String> {
     let path = home().join("config.json");
@@ -384,5 +552,27 @@ mod integration_tests {
             }
             panic!("{e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod mirror_tests {
+    use super::*;
+
+    #[test]
+    fn mirror_urls_order_and_count() {
+        std::env::remove_var("CODING01_GH_MIRROR");
+        let v = mirror_urls("https://github.com/a/b/releases/download/v1/x.exe");
+        assert_eq!(v[0], "https://github.com/a/b/releases/download/v1/x.exe");
+        assert!(v.len() >= 6);
+        assert!(v[1].starts_with("https://ghfast.top/https://github.com/"));
+    }
+
+    #[test]
+    #[ignore = "network: downloads official NullClaw with GitHub mirror fallback"]
+    fn install_with_mirror_fallback() {
+        let r = install(true);
+        eprintln!("install result: {r:?}");
+        assert!(r.is_ok());
     }
 }
