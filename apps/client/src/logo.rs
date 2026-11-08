@@ -1,7 +1,7 @@
 //! 01 Logo 原生矢量绘制 — 无图片资源,与 logo/*.svg 同构
 //! (0=天蓝圆环 Agent 循环;1=浅绿旗形笔画执行;无终端下划线)
 
-use eframe::egui::{self, Color32, Painter, Pos2, Rect, Rounding, Shape, Stroke};
+use eframe::egui::{self, Color32, Painter, Pos2, Rect, Rounding, Shape, Stroke, Ui, Vec2};
 
 use crate::theme;
 
@@ -44,6 +44,11 @@ pub fn glyphs(p: &Painter, rect: Rect, sky: Color32, grn: Color32) {
 }
 
 /// 标题栏/侧栏小图标:圆角底 + 品牌字形
+pub fn tile(ui: &mut Ui, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
+    paint_tile(ui.painter(), rect);
+}
+
 pub fn paint_tile(p: &egui::Painter, rect: Rect) {
     let size = rect.width().min(rect.height());
     let r = size * 0.24;
@@ -169,4 +174,105 @@ fn icon_sample(px: f32, py: f32, white: bool) -> [f32; 4] {
         return [green[0], green[1], green[2], 255.0];
     }
     [bg[0], bg[1], bg[2], 255.0]
+}
+
+// ───────────────────────── Windows 图标设置 ─────────────────────────
+
+/// 写入 .ico(BMP 格式)并替换窗口图标:标题栏白底、任务栏深色
+#[cfg(windows)]
+pub fn apply_window_icons() {
+    use std::path::PathBuf;
+    let tmp = std::env::temp_dir().join("coding01_icons");
+    let _ = std::fs::create_dir_all(&tmp);
+    let white_path = tmp.join("white.ico");
+    let dark_path = tmp.join("dark.ico");
+    let white = icon_rgba(64, true);
+    let dark = icon_rgba(256, false);
+    if !write_ico(&white_path, &white, 64) || !write_ico(&dark_path, &dark, 256) {
+        return;
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn FindWindowW(cls: *const u16, title: *const u16) -> isize;
+        fn LoadImageW(
+            inst: isize,
+            name: *const u16,
+            typ: u32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> isize;
+        fn SendMessageW(hwnd: isize, msg: u32, w: usize, l: isize) -> isize;
+    }
+    const IMAGE_ICON: u32 = 1;
+    const LR_LOADFROMFILE: u32 = 0x0010;
+    const WM_SETICON: u32 = 0x0080;
+    const ICON_SMALL: usize = 0;
+    const ICON_BIG: usize = 1;
+    unsafe {
+        let mut title: Vec<u16> = "01 编码".encode_utf16().collect();
+        title.push(0);
+        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        if hwnd == 0 {
+            return;
+        }
+        let mut wp: Vec<u16> = white_path.to_string_lossy().encode_utf16().collect();
+        wp.push(0);
+        let mut dp: Vec<u16> = dark_path.to_string_lossy().encode_utf16().collect();
+        dp.push(0);
+        let small = LoadImageW(0, wp.as_ptr(), IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
+        let big = LoadImageW(0, dp.as_ptr(), IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
+        if small != 0 {
+            SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small);
+        }
+        if big != 0 {
+            SendMessageW(hwnd, WM_SETICON, ICON_BIG, big);
+        }
+    }
+    let _ = PathBuf::new();
+}
+
+#[cfg(not(windows))]
+pub fn apply_window_icons() {}
+
+fn write_ico(path: &std::path::Path, rgba: &[u8], size: usize) -> bool {
+    let row = size * 4;
+    let xor_len = row * size;
+    let and_row = ((size + 31) / 32) * 4;
+    let and_len = and_row * size;
+    let mut data: Vec<u8> = Vec::with_capacity(40 + xor_len + and_len);
+    data.extend((40u32).to_le_bytes());
+    data.extend((size as i32).to_le_bytes());
+    data.extend(((size * 2) as i32).to_le_bytes());
+    data.extend(1u16.to_le_bytes());
+    data.extend(32u16.to_le_bytes());
+    data.extend(0u32.to_le_bytes());
+    data.extend((xor_len as u32).to_le_bytes());
+    for _ in 0..4 {
+        data.extend(0i32.to_le_bytes());
+    }
+    for y in (0..size).rev() {
+        for x in 0..size {
+            let i = (y * size + x) * 4;
+            data.push(rgba[i + 2]);
+            data.push(rgba[i + 1]);
+            data.push(rgba[i]);
+            data.push(rgba[i + 3]);
+        }
+    }
+    data.extend(std::iter::repeat(0u8).take(and_len));
+    let mut ico: Vec<u8> = Vec::new();
+    ico.extend(0u16.to_le_bytes());
+    ico.extend(1u16.to_le_bytes());
+    ico.extend(1u16.to_le_bytes());
+    ico.push(if size >= 256 { 0 } else { size as u8 });
+    ico.push(if size >= 256 { 0 } else { size as u8 });
+    ico.push(0);
+    ico.push(0);
+    ico.extend(1u16.to_le_bytes());
+    ico.extend(32u16.to_le_bytes());
+    ico.extend((data.len() as u32).to_le_bytes());
+    ico.extend(22u32.to_le_bytes());
+    ico.extend(&data);
+    std::fs::write(path, ico).is_ok()
 }

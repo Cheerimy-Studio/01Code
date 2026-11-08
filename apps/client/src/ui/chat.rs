@@ -33,16 +33,8 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                 }),
         )
         .show(ctx, |ui| {
-            let width = ui.available_width();
-            let gutter = ((width - 1040.0) * 0.5).max(0.0);
-            ui.horizontal(|ui| {
-                ui.add_space(gutter);
-                ui.vertical(|ui| {
-                    ui.set_width(width - 2.0 * gutter);
-                    composer(ui, model);
-                    status_bar(ui, model);
-                });
-            });
+            composer(ui, model);
+            status_bar(ui, model);
         });
 
     // ── 主区:头部 + 会话流 ──
@@ -56,30 +48,22 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
             header(ui, model);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .stick_to_bottom(true)
-                .id_source(("chat_scroll", &model.active_sid, model.trace_view))
                 .show(ui, |ui| {
-                    let gutter = ((ui.available_width() - 1040.0) * 0.5).max(18.0);
                     egui::Frame::none()
                         .inner_margin(egui::Margin {
-                            left: gutter,
-                            right: gutter,
+                            left: 18.0,
+                            right: 18.0,
                             top: 8.0,
                             bottom: 10.0,
                         })
                         .show(ui, |ui| {
-                            let content_width = ui.available_width();
-                            ui.set_max_width(content_width);
                             let mut clicks: Vec<(String, bool)> = Vec::new();
-                            let mut start_new = false;
                             let items = model.transcript();
                             let n = items.len();
                             if n == 0 {
-                                ui.add_space(70.0);
+                                ui.add_space(140.0);
                                 ui.vertical_centered(|ui| {
-                                    let (logo_rect, _) = ui
-                                        .allocate_exact_size(Vec2::splat(46.0), Sense::hover());
-                                    crate::logo::paint_tile(ui.painter(), logo_rect);
+                                    crate::logo::tile(ui, 46.0);
                                     ui.add_space(12.0);
                                     ui.label(
                                         RichText::new("01 编码")
@@ -87,48 +71,15 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                                             .color(t::TEXT)
                                             .strong(),
                                     );
-                                    ui.add_space(6.0);
-                                    ui.label(
-                                        RichText::new("经由 NullClaw 网关运行的编码助手")
-                                            .size(12.5)
-                                            .color(t::FAINT),
-                                    );
-                                    ui.add_space(18.0);
-                                    if ui
-                                        .add_sized(
-                                            [132.0, 34.0],
-                                            Button::new(
-                                                RichText::new("＋ 新会话")
-                                                    .size(13.0)
-                                                    .color(t::TEXT),
-                                            )
-                                            .fill(t::WHITE)
-                                            .stroke(Stroke::new(1.0_f32, t::BORDER))
-                                            .rounding(Rounding::same(9.0)),
-                                        )
-                                        .clicked()
-                                    {
-                                        start_new = true;
-                                    }
                                 });
                             }
                             for (i, item) in items.iter().enumerate() {
-                                if model.trace_view && matches!(item, Item::User(_) | Item::Ai(_)) {
-                                    continue;
-                                }
-                                render_cached_item(
-                                    ui,
-                                    &model.active_sid,
-                                    item,
-                                    i,
-                                    i + 1 == n,
-                                    &mut clicks,
-                                );
+                                render_item(ui, item, i == 0, i + 1 == n, &mut clicks);
                             }
                             if model.is_busy() {
-                                busy_line(ui, model.busy_secs(), model.waiting_approval());
+                                busy_line(ui, model.busy_secs());
                             } else if let Some(Item::Ai(s)) = items.last() {
-                                if s.done {
+                                if s.done && s.typed >= s.text.chars().count() {
                                     if let Some(secs) = model.last_elapsed {
                                         ui.add_space(2.0);
                                         ui.label(
@@ -143,9 +94,6 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                             for (rid, ok) in clicks {
                                 model.respond_approval(&rid, ok);
                             }
-                            if start_new {
-                                model.new_task();
-                            }
                         });
                 });
         });
@@ -156,7 +104,7 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
 
 // ───────────────────────── 头部 ─────────────────────────
 
-fn header(ui: &mut egui::Ui, model: &mut Model) {
+fn header(ui: &mut egui::Ui, model: &Model) {
     egui::Frame::none()
         .fill(t::WHITE)
         .inner_margin(egui::Margin {
@@ -171,14 +119,10 @@ fn header(ui: &mut egui::Ui, model: &mut Model) {
                     .active_session()
                     .map(|s| s.title.clone())
                     .unwrap_or_else(|| "01 编码".to_string());
+                ui.label(RichText::new(&title).size(15.0).color(t::TEXT).strong());
                 if let Some(s) = model.active_session() {
                     widgets::chip(ui, &s.workspace, Chip::Plain);
                 }
-                ui.add(
-                    egui::Label::new(RichText::new(&title).size(15.0).color(t::TEXT).strong())
-                        .truncate(true),
-                )
-                .on_hover_text(&title);
                 let done = model
                     .todo
                     .iter()
@@ -192,151 +136,19 @@ fn header(ui: &mut egui::Ui, model: &mut Model) {
                     );
                 }
             });
-            if !model.todo.is_empty() {
-                egui::CollapsingHeader::new("任务计划")
-                    .id_source(("plan", &model.active_sid))
-                    .show(ui, |ui| {
-                        egui::ScrollArea::vertical()
-                            .max_height(140.0)
-                            .show(ui, |ui| {
-                                for step in &model.todo {
-                                    let (mark, color) = match step.state {
-                                        TodoState::Pending => ("○", t::MUTED),
-                                        TodoState::Running => ("●", t::SKY),
-                                        TodoState::Done => ("✓", t::GRN_CHIP_TX),
-                                    };
-                                    ui.label(
-                                        RichText::new(format!("{mark} {}", step.title))
-                                            .color(color),
-                                    );
-                                }
-                            });
-                    });
-            }
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                let steps = model.steps();
-                for (value, label) in [
-                    (false, "对话".to_string()),
-                    (
-                        true,
-                        if steps > 0 {
-                            format!("轨迹 · {}", steps)
-                        } else {
-                            "轨迹".to_string()
-                        },
-                    ),
-                ] {
-                    let selected = model.trace_view == value;
-                    let response = ui.add(
-                        Button::new(RichText::new(label).size(14.0).color(if selected {
-                            t::SKY
-                        } else {
-                            t::MUTED
-                        }))
-                        .frame(false),
-                    );
-                    if response.clicked() {
-                        model.trace_view = value;
-                    }
-                    if selected {
-                        ui.painter().line_segment(
-                            [response.rect.left_bottom(), response.rect.right_bottom()],
-                            Stroke::new(2.0_f32, t::SKY),
-                        );
-                    }
-                }
-            });
-            ui.separator();
         });
 }
 
 // ───────────────────────── 会话流 ─────────────────────────
 
-#[derive(Clone, Copy)]
-struct ItemLayout {
-    width: u32,
-    stamp: u64,
-    height: f32,
-}
-fn render_cached_item(
-    ui: &mut egui::Ui,
-    sid: &str,
-    item: &Item,
-    index: usize,
-    last: bool,
-    clicks: &mut Vec<(String, bool)>,
-) {
-    let width = ui.available_width().round() as u32;
-    let stamp = match item {
-        Item::Ai(a) => a.text.len() as u64,
-        Item::Reasoning(s) | Item::Sys(s) => s.len() as u64,
-        Item::User(u) => u.text.len() as u64 + u.images.len() as u64,
-        Item::Tool(n) => n.meta.len() as u64 + (n.state as u64) * 1_000_000,
-        Item::Diff(d) => d.added.len() as u64 + d.removed.len() as u64,
-        Item::Approval(a) => {
-            a.action.len() as u64 + if a.responded.is_some() { 1_000_000 } else { 0 }
-        }
-    };
-    let id = egui::Id::new(("message_layout", sid, index));
-    let cache = ui.ctx().data(|d| d.get_temp::<ItemLayout>(id));
-    if !last {
-        if let Some(cache) = cache.filter(|c| c.width == width && c.stamp == stamp) {
-            if cache.height <= 0.0 {
-                return;
-            }
-            let rect = egui::Rect::from_min_size(
-                ui.cursor().min,
-                Vec2::new(ui.available_width(), cache.height),
-            );
-            if !ui.is_rect_visible(rect) {
-                ui.allocate_exact_size(
-                    Vec2::new(
-                        ui.available_width(),
-                        (cache.height - ui.spacing().item_spacing.y).max(0.0),
-                    ),
-                    Sense::hover(),
-                );
-                return;
-            }
-        }
-    }
-    let top = ui.cursor().top();
-    ui.push_id((sid, index), |ui| {
-        render_item(ui, item, index == 0, last, clicks)
-    });
-    let height = ui.cursor().top() - top;
-    ui.ctx().data_mut(|d| {
-        d.insert_temp(
-            id,
-            ItemLayout {
-                width,
-                stamp,
-                height,
-            },
-        )
-    });
-}
-
 fn render_item(
     ui: &mut egui::Ui,
     item: &Item,
-    _is_first: bool,
-    _is_last: bool,
+    is_first: bool,
+    is_last: bool,
     clicks: &mut Vec<(String, bool)>,
 ) {
     match item {
-        Item::Reasoning(text) => {
-            egui::CollapsingHeader::new("思考过程")
-                .id_source("reasoning")
-                .show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(RichText::new(text).color(t::MUTED))
-                            .wrap(true)
-                            .selectable(true),
-                    );
-                });
-        }
         Item::User(u) => {
             // 附件缩略图(右对齐,位于气泡上方)
             if !u.images.is_empty() {
@@ -346,10 +158,7 @@ fn render_item(
                 let mut row_h = 0.0f32;
                 for img in &u.images {
                     let [tw, th] = img.texture.size();
-                    let max_w = ((row_w - 8.0 * (u.images.len().saturating_sub(1)) as f32)
-                        / u.images.len().max(1) as f32)
-                        .clamp(1.0, 220.0);
-                    let scale = (max_w / tw.max(1) as f32).min(max_h / th.max(1) as f32);
+                    let scale = (220.0 / tw.max(1) as f32).min(max_h / th.max(1) as f32);
                     let sz = Vec2::new(tw as f32 * scale, th as f32 * scale);
                     row_h = row_h.max(sz.y);
                     items.push((img.texture.id(), sz));
@@ -430,7 +239,7 @@ fn render_item(
             render_ai(ui, stream);
             ui.add_space(8.0);
         }
-        Item::Tool(node) => render_tool(ui, node),
+        Item::Tool(node) => render_tool(ui, node, is_first, is_last),
         Item::Diff(d) => render_diff(ui, d),
         Item::Approval(a) => render_approval(ui, a, clicks),
         Item::Sys(text) => {
@@ -453,7 +262,33 @@ fn render_item(
 
 /// 助手消息:流式打字 or Markdown 排版
 fn render_ai(ui: &mut egui::Ui, stream: &Stream) {
-    if stream.text.is_empty() {
+    let len = stream.text.chars().count();
+    if stream.text.is_empty() && !stream.done {
+        return;
+    }
+    if stream.done && stream.typed < len {
+        // 打字机:衬线正文 + 天蓝光标
+        let partial: String = stream.text.chars().take(stream.typed).collect();
+        let mut job = LayoutJob::default();
+        job.append(
+            &partial,
+            0.0,
+            TextFormat {
+                font_id: t::serif(14.5),
+                color: t::TEXT,
+                ..Default::default()
+            },
+        );
+        job.append(
+            "▌",
+            0.0,
+            TextFormat {
+                font_id: t::serif(14.5),
+                color: t::SKY,
+                ..Default::default()
+            },
+        );
+        ui.add(egui::Label::new(job).wrap(true));
         return;
     }
     render_md(ui, &stream.text);
@@ -538,11 +373,7 @@ fn render_md(ui: &mut egui::Ui, text: &str) {
             });
             continue;
         }
-        ui.add(
-            egui::Label::new(inline_job(trimmed, 14.5))
-                .wrap(true)
-                .selectable(true),
-        );
+        ui.add(egui::Label::new(inline_job(trimmed, 14.5)).wrap(true));
     }
     if in_code && !code_lines.is_empty() {
         flush_code(ui, &code_lines);
@@ -639,7 +470,7 @@ fn flush_code(ui: &mut egui::Ui, lines: &[String]) {
     let pad = 10.0;
     let inner_w = galleys.iter().map(|g| g.size().x).fold(0.0f32, f32::max);
     let w = (inner_w + pad * 2.0 + 8.0).min(ui.available_width() - 8.0);
-    let h = galleys.iter().map(|g| g.size().y.max(line_h)).sum::<f32>() + pad * 2.0;
+    let h = galleys.len() as f32 * line_h + pad * 2.0;
     let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h + 4.0), Sense::hover());
     let rect = egui::Rect::from_min_size(
         Pos2::new(row.left() + 4.0, row.top() + 2.0),
@@ -652,209 +483,166 @@ fn flush_code(ui: &mut egui::Ui, lines: &[String]) {
         Rounding::same(9.0),
         Stroke::new(1.0_f32, t::BORDER),
     ));
-    let mut y = rect.top() + pad;
-    for g in &galleys {
-        p.galley(Pos2::new(rect.left() + pad, y), g.clone(), t::TEXT2);
-        y += g.size().y.max(line_h);
-    }
-    let copy = egui::Rect::from_min_size(
-        Pos2::new(rect.right() - 24.0, rect.top() + 3.0),
-        Vec2::splat(20.0),
-    );
-    icons::copy(&ui.painter_at(copy), copy.center(), 12.0, t::MUTED);
-    if ui
-        .interact(
-            copy,
-            ui.id().with(("code_copy", rect.top().to_bits())),
-            Sense::click(),
-        )
-        .clicked()
-    {
-        ui.ctx().output_mut(|o| o.copied_text = lines.join("\n"));
+    for (i, g) in galleys.iter().enumerate() {
+        p.galley(
+            Pos2::new(rect.left() + pad, rect.top() + pad + i as f32 * line_h),
+            g.clone(),
+            t::TEXT2,
+        );
     }
     ui.add_space(6.0);
 }
 
-fn render_tool(ui: &mut egui::Ui, node: &crate::model::ToolNode) {
-    let (state, color) = match node.state {
-        ToolState::Running => ("运行中", t::SKY_DEEP),
-        ToolState::Ok => ("已完成", t::GRN_CHIP_TX),
-        ToolState::Err => ("失败 / 中断", t::DEL_TX),
-        _ => ("等待", t::MUTED),
-    };
-    let elapsed = node
-        .started
-        .filter(|_| node.state == ToolState::Running)
-        .map(|s| s.elapsed().as_millis() as u64)
-        .unwrap_or(node.elapsed_ms);
-    egui::Frame::none()
-        .fill(t::PANEL)
-        .rounding(9.0)
-        .inner_margin(10.0)
-        .show(ui, |ui| {
-            egui::CollapsingHeader::new(
-                RichText::new(format!(
-                    "{}  ·  {}  ·  {:.1}s",
-                    node.tool,
-                    state,
-                    elapsed as f64 / 1000.0
-                ))
-                .color(color),
-            )
-            .id_source((&node.call, "tool"))
-            .show(ui, |ui| {
-                ui.label(RichText::new("参数").size(11.0).color(t::MUTED));
-                ui.add(
-                    egui::Label::new(RichText::new(&node.input).monospace())
-                        .wrap(true)
-                        .selectable(true),
-                );
-                if node.state != ToolState::Running {
-                    ui.separator();
-                    ui.label(RichText::new("结果").size(11.0).color(t::MUTED));
-                    egui::ScrollArea::vertical()
-                        .id_source((&node.call, "output"))
-                        .max_height(240.0)
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::Label::new(RichText::new(&node.meta).monospace())
-                                    .wrap(true)
-                                    .selectable(true),
-                            );
-                        });
-                    if ui.small_button("复制结果").clicked() {
-                        ui.ctx().output_mut(|o| o.copied_text = node.meta.clone());
-                    }
-                }
-            });
-        });
+fn render_tool(ui: &mut egui::Ui, node: &crate::model::ToolNode, _is_first: bool, _is_last: bool) {
+    ui.horizontal(|ui| {
+        ui.add_space(2.0);
+        let (r, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+        let p = ui.painter();
+        let c = r.center();
+        match node.state {
+            ToolState::Ok => icons::sparkle(p, c, 11.0, t::GRN),
+            ToolState::Err => icons::sparkle(p, c, 11.0, t::DEL_TX),
+            ToolState::Pending => icons::sparkle(p, c, 11.0, t::FAINT),
+            ToolState::Running => {
+                ui.put(r, egui::Spinner::new().size(13.0).color(t::SKY));
+            }
+        }
+        ui.label(RichText::new("工具调用").size(12.5).color(t::MUTED));
+        ui.label(RichText::new("·").size(12.5).color(t::FAINT));
+        let name_color = match node.state {
+            ToolState::Err => t::DEL_TX,
+            _ => t::TEXT2,
+        };
+        ui.label(
+            RichText::new(&node.tool)
+                .size(12.5)
+                .color(name_color)
+                .monospace(),
+        );
+        if !node.meta.is_empty() {
+            ui.label(RichText::new("·").size(12.5).color(t::FAINT));
+            ui.label(RichText::new(&node.meta).size(11.5).color(t::FAINT));
+        }
+    });
     ui.add_space(4.0);
 }
 
 fn render_diff(ui: &mut egui::Ui, d: &crate::events::Diff) {
-    if d.removed.is_empty() && d.added.is_empty() {
+    let font = egui::FontId::monospace(12.0);
+    let max_w = (ui.available_width() - 90.0).max(200.0);
+    let mut rows: Vec<(String, Color32, Color32)> = Vec::new();
+    for line in &d.removed {
+        rows.push((format!("- {}", line), t::DEL_TX, t::DEL_BG));
+    }
+    for line in &d.added {
+        rows.push((format!("+ {}", line), t::GRN_CHIP_TX, t::GRN_CHIP_BG));
+    }
+    if rows.is_empty() {
         return;
     }
-    egui::CollapsingHeader::new(format!(
-        "文件变更  +{}  −{}",
-        d.added.len(),
-        d.removed.len()
-    ))
-    .default_open(true)
-    .show(ui, |ui| {
-        egui::ScrollArea::vertical()
-            .max_height(300.0)
-            .show(ui, |ui| {
-                for (lines, prefix, color, bg) in [
-                    (&d.removed, "−", t::DEL_TX, t::DEL_BG),
-                    (&d.added, "+", t::GRN_CHIP_TX, t::GRN_CHIP_BG),
-                ] {
-                    for line in lines {
-                        egui::Frame::none()
-                            .fill(bg)
-                            .inner_margin(4.0)
-                            .show(ui, |ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(format!("{prefix} {line}"))
-                                            .monospace()
-                                            .color(color),
-                                    )
-                                    .wrap(true)
-                                    .selectable(true),
-                                );
-                            });
-                    }
-                }
-            });
-    });
+    let galleys: Vec<_> = rows
+        .iter()
+        .map(|(txt, color, _)| {
+            ui.painter()
+                .layout(txt.clone(), font.clone(), *color, max_w)
+        })
+        .collect();
+    let line_h = 18.0;
+    let pad = 10.0;
+    let inner_w = galleys.iter().map(|g| g.size().x).fold(0.0f32, f32::max);
+    let card_w = (inner_w + pad * 2.0 + 16.0).min(ui.available_width() - 24.0);
+    let card_h = galleys.len() as f32 * line_h + pad * 2.0;
+    let (row_rect, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), card_h), Sense::hover());
+    let card = egui::Rect::from_min_size(
+        Pos2::new(row_rect.left() + 22.0, row_rect.top()),
+        Vec2::new(card_w, card_h),
+    );
+    let p = ui.painter();
+    p.add(Shape::rect_filled(card, Rounding::same(10.0), t::PANEL));
+    p.add(Shape::rect_stroke(
+        card,
+        Rounding::same(10.0),
+        Stroke::new(1.0_f32, t::BORDER),
+    ));
+    for (i, ((_, _, bg), g)) in rows.iter().zip(galleys.iter()).enumerate() {
+        let ly = card.top() + pad + i as f32 * line_h;
+        let line_rect = egui::Rect::from_min_size(
+            Pos2::new(card.left() + 6.0, ly),
+            Vec2::new(card.width() - 12.0, line_h),
+        );
+        p.add(Shape::rect_filled(line_rect, Rounding::same(3.0), *bg));
+        p.galley(Pos2::new(card.left() + pad, ly), g.clone(), t::TEXT2);
+    }
     ui.add_space(6.0);
 }
 
 fn render_approval(ui: &mut egui::Ui, a: &Approval, clicks: &mut Vec<(String, bool)>) {
-    egui::Frame::none()
-        .fill(t::CODE_BG)
-        .rounding(10.0)
-        .inner_margin(12.0)
-        .show(ui, |ui| {
-            let (r, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
-            let p = ui.painter_at(r);
-            p.add(Shape::convex_polygon(
-                vec![
-                    Pos2::new(r.center().x, r.top() + 2.0),
-                    Pos2::new(r.right() - 1.0, r.bottom() - 3.0),
-                    Pos2::new(r.left() + 1.0, r.bottom() - 3.0),
-                ],
-                Color32::from_rgb(0xFD, 0xE6, 0x8A),
-                Stroke::new(1.0_f32, Color32::from_rgb(0xD9, 0x77, 0x06)),
-            ));
-            ui.label(
-                RichText::new(format!("需要批准:{}", a.action))
-                    .size(13.0)
-                    .color(t::TEXT),
-            );
-            if !a.reason.is_empty() {
-                ui.label(RichText::new(&a.reason).size(12.0).color(t::MUTED));
+    ui.horizontal(|ui| {
+        let (r, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+        let p = ui.painter_at(r);
+        p.add(Shape::convex_polygon(
+            vec![
+                Pos2::new(r.center().x, r.top() + 2.0),
+                Pos2::new(r.right() - 1.0, r.bottom() - 3.0),
+                Pos2::new(r.left() + 1.0, r.bottom() - 3.0),
+            ],
+            Color32::from_rgb(0xFD, 0xE6, 0x8A),
+            Stroke::new(1.0_f32, Color32::from_rgb(0xD9, 0x77, 0x06)),
+        ));
+        ui.label(
+            RichText::new(format!("需要批准:{}", a.action))
+                .size(13.0)
+                .color(t::TEXT),
+        );
+        if !a.reason.is_empty() {
+            ui.label(RichText::new(&a.reason).size(12.0).color(t::MUTED));
+        }
+        match a.responded {
+            Some(true) => {
+                ui.label(RichText::new("已批准").size(12.0).color(t::GRN_CHIP_TX));
             }
-            ui.add_space(5.0);
-            ui.horizontal(|ui| match a.responded {
-                Some(true) => {
-                    ui.label(RichText::new("已批准").size(12.0).color(t::GRN_CHIP_TX));
+            Some(false) => {
+                ui.label(RichText::new("已拒绝").size(12.0).color(t::DEL_TX));
+            }
+            None => {
+                if ui
+                    .add_sized(
+                        [52.0, 22.0],
+                        Button::new(RichText::new("拒绝").size(12.0).color(t::TEXT2))
+                            .fill(t::WHITE)
+                            .stroke(Stroke::new(1.0_f32, t::BORDER))
+                            .rounding(Rounding::same(7.0)),
+                    )
+                    .clicked()
+                {
+                    clicks.push((a.request_id.clone(), false));
                 }
-                Some(false) => {
-                    ui.label(RichText::new("已拒绝").size(12.0).color(t::DEL_TX));
+                if ui
+                    .add_sized(
+                        [52.0, 22.0],
+                        Button::new(RichText::new("批准").size(12.0).color(Color32::WHITE))
+                            .fill(t::SKY)
+                            .rounding(Rounding::same(7.0)),
+                    )
+                    .clicked()
+                {
+                    clicks.push((a.request_id.clone(), true));
                 }
-                None => {
-                    if ui
-                        .add_sized(
-                            [52.0, 22.0],
-                            Button::new(RichText::new("拒绝").size(12.0).color(t::TEXT2))
-                                .fill(t::WHITE)
-                                .stroke(Stroke::new(1.0_f32, t::BORDER))
-                                .rounding(Rounding::same(7.0)),
-                        )
-                        .clicked()
-                    {
-                        clicks.push((a.request_id.clone(), false));
-                    }
-                    if ui
-                        .add_sized(
-                            [52.0, 22.0],
-                            Button::new(RichText::new("批准").size(12.0).color(Color32::WHITE))
-                                .fill(t::SKY)
-                                .rounding(Rounding::same(7.0)),
-                        )
-                        .clicked()
-                    {
-                        clicks.push((a.request_id.clone(), true));
-                    }
-                }
-            });
-        });
+            }
+        }
+    });
     ui.add_space(6.0);
 }
 
-fn busy_line(ui: &mut egui::Ui, secs: u64, waiting: bool) {
+fn busy_line(ui: &mut egui::Ui, secs: u64) {
     ui.horizontal(|ui| {
         ui.add_space(2.0);
-        if !waiting {
-            ui.add(egui::Spinner::new().size(13.0).color(t::SKY));
-        } else {
-            let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-            icons::clock(&ui.painter_at(r), r.center(), 13.0, t::MUTED);
-        }
+        ui.add(egui::Spinner::new().size(13.0).color(t::SKY));
         ui.label(
-            RichText::new(format!(
-                "{} · 用时 {} 秒",
-                if waiting {
-                    "等待你的审批"
-                } else {
-                    "生成中"
-                },
-                secs
-            ))
-            .size(12.5)
-            .color(t::SKY_DEEP),
+            RichText::new(format!("执行中 · 用时 {} 秒 …", secs))
+                .size(12.5)
+                .color(t::SKY_DEEP),
         );
     });
     ui.add_space(4.0);
@@ -942,22 +730,7 @@ fn composer(ui: &mut egui::Ui, model: &mut Model) {
                 ui.add_space(4.0);
             }
             // 在 TextEdit 消费按键前拦截 Enter:提交消息,Shift+Enter 保留换行
-            let input_id = ui.make_persistent_id("message_input");
-            let composition_frame = ui.input(|i| {
-                i.events.iter().any(|e| {
-                    matches!(
-                        e,
-                        egui::Event::CompositionStart
-                            | egui::Event::CompositionUpdate(_)
-                            | egui::Event::CompositionEnd(_)
-                    )
-                })
-            });
-            let enter_now = if modal_open
-                || model.composing
-                || composition_frame
-                || !ui.memory(|m| m.has_focus(input_id))
-            {
+            let enter_now = if modal_open {
                 false
             } else {
                 ui.input_mut(|i| {
@@ -966,7 +739,6 @@ fn composer(ui: &mut egui::Ui, model: &mut Model) {
             };
             let resp = ui.add(
                 egui::TextEdit::multiline(&mut model.input)
-                    .id(input_id)
                     .hint_text("发消息或创建任务 · Enter 发送，Shift+Enter 换行")
                     .desired_rows(1)
                     .frame(false)
@@ -1006,11 +778,7 @@ fn composer(ui: &mut egui::Ui, model: &mut Model) {
                         }
                     }
                 }
-                widgets::chip(
-                    ui,
-                    if model.demo { "演示" } else { "NullClaw" },
-                    Chip::Plain,
-                );
+                widgets::chip(ui, "默认工作区", Chip::Plain);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let busy = model.is_busy();
                     let send = ui.add_sized(
@@ -1023,12 +791,11 @@ fn composer(ui: &mut egui::Ui, model: &mut Model) {
                         .fill(if busy { t::FAINT } else { t::SKY })
                         .rounding(Rounding::same(999.0)),
                     );
-                    if send.clicked() && !modal_open {
-                        if busy {
-                            model.stop();
-                        } else {
-                            model.user_submit();
-                        }
+                    if send.clicked() && !busy {
+                        model.user_submit();
+                    }
+                    if ui.available_width() > 140.0 {
+                        ui.label(RichText::new(&model.model_name).size(12.5).color(t::FAINT));
                     }
                 });
             });
@@ -1036,42 +803,23 @@ fn composer(ui: &mut egui::Ui, model: &mut Model) {
 }
 
 fn status_bar(ui: &mut egui::Ui, model: &Model) {
-    if model.history_blocked || model.settings.status.starts_with("会话保存失败") {
-        ui.label(
-            RichText::new("会话尚未保存，请在「更新与存储」中查看原因")
-                .size(11.0)
-                .color(t::DEL_TX),
-        );
-        return;
-    }
     let steps = model.steps();
-    let busy = model.is_busy();
-    // 空闲且无统计信息时隐藏状态栏(保持界面干净)
-    if !busy && steps == 0 && model.ctx_used <= 0.0 {
+    if steps == 0 {
         return;
     }
+    let pct = (model.ctx_used / model.ctx_limit.max(1.0) * 100.0) as u32;
     ui.add_space(6.0);
     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-        let text = if busy {
-            format!("生成中 · 用时 {} 秒", model.busy_secs())
-        } else {
-            let mut parts: Vec<String> = Vec::new();
-            if steps > 0 {
-                parts.push(format!("{} 次工具调用", steps));
-            }
-            if model.ctx_used > 0.0 && model.ctx_limit > 0.0 {
-                let pct = (model.ctx_used / model.ctx_limit * 100.0) as u32;
-                parts.push(format!(
-                    "上下文 {}k ({}%)",
-                    (model.ctx_used / 1000.0) as u32,
-                    pct
-                ));
-            }
-            parts.join(" · ")
-        };
-        if !text.is_empty() {
-            ui.label(RichText::new(text).size(11.5).color(t::FAINT));
-        }
+        ui.label(
+            RichText::new(format!(
+                "{} 步 · 上下文 {}k({}%)",
+                steps,
+                (model.ctx_used / 1000.0) as u32,
+                pct
+            ))
+            .size(11.5)
+            .color(t::FAINT),
+        );
     });
     ui.add_space(8.0);
 }

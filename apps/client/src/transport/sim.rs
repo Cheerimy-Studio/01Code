@@ -34,18 +34,11 @@ impl Transport for Sim {
 
     fn send(&mut self, msg: InMsg) {
         match msg {
-            InMsg::UserText { sid, text, .. } => {
-                let (tx, rx) = mpsc::channel();
-                self.rx = rx;
-                self.tx = tx.clone();
+            InMsg::UserText { sid, text } => {
+                let tx = self.tx.clone();
                 thread::spawn(move || canned_reply(tx, sid, text));
             }
             InMsg::Approval { .. } => {}
-            InMsg::Cancel => {
-                let (tx, rx) = mpsc::channel();
-                self.tx = tx;
-                self.rx = rx;
-            }
         }
     }
 }
@@ -241,16 +234,11 @@ fn canned_reply(tx: Sender<Event>, sid: String, text: String) {
     );
     stream_text(&tx, &sid, "已确认相关实现,继续按计划执行中。");
     tx.send(Event::CtxUsage {
-        sid: sid.clone(),
+        sid,
         used: 136_000.0,
         limit: 200_000.0,
     })
     .ok();
-    let _ = tx.send(Event::SessionDone {
-        sid,
-        cost: String::new(),
-        ms: 0,
-    });
 }
 
 #[allow(unused)]

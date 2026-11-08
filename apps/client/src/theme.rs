@@ -6,20 +6,20 @@ use eframe::egui::Color32;
 /// 页面浅灰
 pub const BG_PAGE: Color32 = Color32::from_rgb(0xF6, 0xF8, 0xFB);
 /// 侧栏 / 右栏面板
-pub const PANEL: Color32 = Color32::from_rgb(0xF7, 0xF8, 0xFA);
+pub const PANEL: Color32 = Color32::from_rgb(0xF8, 0xFA, 0xFC);
 /// 白面板
 pub const WHITE: Color32 = Color32::WHITE;
 /// 描边
-pub const BORDER: Color32 = Color32::from_rgb(0xE5, 0xE7, 0xEB);
+pub const BORDER: Color32 = Color32::from_rgb(0xE4, 0xEA, 0xF1);
 
-pub const TEXT: Color32 = Color32::from_rgb(0x17, 0x19, 0x1E);
+pub const TEXT: Color32 = Color32::from_rgb(0x0F, 0x17, 0x2A);
 pub const TEXT2: Color32 = Color32::from_rgb(0x33, 0x41, 0x55);
 pub const MUTED: Color32 = Color32::from_rgb(0x64, 0x74, 0x8B);
 pub const FAINT: Color32 = Color32::from_rgb(0x94, 0xA3, 0xB8);
 
 /// 天蓝 = 主色 / 交互 / 进行中
-pub const SKY: Color32 = Color32::from_rgb(0x4D, 0x6B, 0xFE);
-pub const SKY_DEEP: Color32 = Color32::from_rgb(0x3D, 0x57, 0xD9);
+pub const SKY: Color32 = Color32::from_rgb(0x0E, 0xA5, 0xE9);
+pub const SKY_DEEP: Color32 = Color32::from_rgb(0x02, 0x84, 0xC7);
 pub const SKY_CHIP_BG: Color32 = Color32::from_rgb(0xF0, 0xF9, 0xFF);
 pub const SKY_CHIP_BR: Color32 = Color32::from_rgb(0xBA, 0xE6, 0xFD);
 pub const SKY_CHIP_TX: Color32 = Color32::from_rgb(0x03, 0x69, 0xA1);
@@ -41,7 +41,7 @@ pub const HOVER: Color32 = Color32::from_rgb(0xF5, 0xF7, 0xFA);
 pub const SELECTED: Color32 = Color32::from_rgb(0xEE, 0xF2, 0xF7);
 
 /// 用户气泡
-pub const BUBBLE_BG: Color32 = Color32::from_rgb(0xEC, 0xF2, 0xFF);
+pub const BUBBLE_BG: Color32 = Color32::from_rgb(0xEA, 0xF2, 0xFE);
 
 /// 文本选中背景(校准蓝色,正文保持黑色可读)
 pub const SELECTION_BG: Color32 = Color32::from_rgb(0xBF, 0xDB, 0xFE);

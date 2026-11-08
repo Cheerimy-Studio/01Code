@@ -15,8 +15,6 @@ fn session_row(
     s: &Session,
     selected: bool,
     clicks: &mut Vec<String>,
-    edits: &mut Vec<(String, String)>,
-    exports: &mut Vec<String>,
     deletes: &mut Vec<String>,
 ) {
     let w = ui.available_width();
@@ -63,16 +61,6 @@ fn session_row(
         clicks.push(s.sid.clone());
     }
     resp.context_menu(|ui| {
-        ui.label("会话名称");
-        let mut title = s.title.clone();
-        if ui.text_edit_singleline(&mut title).changed() && !title.trim().is_empty() {
-            edits.push((s.sid.clone(), title));
-        }
-        if ui.button("复制为 Markdown").clicked() {
-            exports.push(s.sid.clone());
-            ui.close_menu();
-        }
-        ui.add_space(4.0);
         if ui
             .button(RichText::new("删除会话").color(t::DEL_TX))
             .clicked()
@@ -116,15 +104,9 @@ fn icon_button(ui: &mut egui::Ui, icon: fn(&egui::Painter, Pos2, f32, Color32)) 
 
 pub fn show(ctx: &egui::Context, model: &mut Model) {
     let mut clicks: Vec<String> = Vec::new();
-    let mut edits = Vec::new();
-    let mut exports = Vec::new();
     let mut deletes: Vec<String> = Vec::new();
     egui::SidePanel::left("left")
-        .exact_width(if ctx.screen_rect().width() < 820.0 {
-            200.0
-        } else {
-            260.0
-        })
+        .exact_width(248.0)
         .resizable(false)
         .frame(
             egui::Frame::none()
@@ -193,27 +175,19 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
             }
             ui.add_space(8.0);
 
-            // 菜单(全部可用)
             if menu_row(ui, "扩展", icons::grid4) {
-                model.info_title = "扩展 · 运行时能力".into();
-                model.load_info(vec!["capabilities".into()]);
-                model.modal = Some(Modal::Info);
+                model.settings.cli("扩展", vec!["capabilities".into()]);
             }
             if menu_row(ui, "定时任务", icons::clock) {
-                model.info_title = "定时任务".into();
-                model.load_info(vec!["cron".into(), "list".into()]);
-                model.modal = Some(Modal::Info);
-            }
-            if menu_row(ui, "模型", icons::sliders) {
-                model.settings.prefs = model.runtime.clone();
-                model.settings.connection = model.runtime_connection.clone();
-                model.settings.tab = 0;
+                model.settings.tab = 2;
                 model.modal = Some(Modal::Settings);
             }
+            if menu_row(ui, "模型", icons::sliders) {
+                model.settings.tab = 1;
+                model.modal = Some(Modal::Settings);
+                model.settings.sync();
+            }
             if menu_row(ui, "设置", icons::gear) {
-                model.settings.prefs = model.runtime.clone();
-                model.settings.connection = model.runtime_connection.clone();
-
                 model.modal = Some(Modal::Settings);
             }
             ui.add_space(6.0);
@@ -268,15 +242,7 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                         for idx in idxs {
                             let s = &sessions[idx];
                             let selected = s.sid == model.active_sid;
-                            session_row(
-                                ui,
-                                s,
-                                selected,
-                                &mut clicks,
-                                &mut edits,
-                                &mut exports,
-                                &mut deletes,
-                            );
+                            session_row(ui, s, selected, &mut clicks, &mut deletes);
                         }
                     }
                     if sessions.is_empty() {
@@ -314,7 +280,9 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
             p.text(
                 Pos2::new(rect.left() + 34.0, cy),
                 egui::Align2::LEFT_CENTER,
-                "01 用户",
+                model.settings.account["username"]
+                    .as_str()
+                    .unwrap_or("未绑定账户"),
                 egui::FontId::proportional(13.0),
                 t::TEXT2,
             );
@@ -322,17 +290,6 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
 
     for sid in clicks {
         model.switch_session(&sid);
-    }
-    for sid in exports {
-        ctx.output_mut(|o| o.copied_text = model.export_markdown(&sid));
-    }
-    if !edits.is_empty() {
-        for (sid, title) in edits {
-            if let Some(s) = model.sessions.iter_mut().find(|s| s.sid == sid) {
-                s.title = title;
-            }
-        }
-        model.save_history();
     }
     for sid in deletes {
         model.delete_session(&sid);

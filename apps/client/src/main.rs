@@ -3,31 +3,29 @@
 mod config;
 mod events;
 mod gateway;
+mod history;
 mod icons;
+mod local_proxy;
 mod logo;
 mod model;
-mod process_tree;
+mod runtime;
 mod settings;
-mod storage;
 mod theme;
 mod transport;
 mod ui;
-mod updater;
 mod util;
 mod widgets;
 
 use eframe::egui;
-
+use events::Event;
 use model::Model;
 use transport::Transport;
 
 struct App {
     model: Model,
     transport: Box<dyn Transport>,
-    /// 请求的窗口逻辑尺寸(首帧用于对齐 winit 认知与实际窗口)
     requested_size: [f32; 2],
     resized: bool,
-
     /// 测试钩子:环境变量 CODING01_SEND 启动后自动提交一条消息
     autosend: Option<String>,
     autosend_at: Option<std::time::Instant>,
@@ -36,6 +34,9 @@ struct App {
     test_save_at: Option<std::time::Instant>,
     /// 测试钩子:启动后附加一个文件/图片
     attach_path: Option<std::path::PathBuf>,
+    screenshot_at: std::time::Instant,
+    screenshot_requested: bool,
+    history_at: std::time::Instant,
 }
 
 impl App {
@@ -43,32 +44,54 @@ impl App {
         setup_style(&cc.egui_ctx);
         setup_fonts(&cc.egui_ctx);
         let use_sim = std::env::var("CODING01_SIM").is_ok();
-        let mut model = Model::new(use_sim);
+        let cfg = config::ClientCfg::load();
         let transport: Box<dyn Transport> = if use_sim {
             Box::new(transport::sim::Sim::new())
         } else {
-            make_transport(&model)
+            Box::new(transport::ws::Ws::connect(&cfg))
         };
+        let [w, h] = if std::env::var("CODING01_NARROW").is_ok() {
+            [760.0, 560.0]
+        } else {
+            fit_size(1150.0, 660.0)
+        };
+        let mut model = Model::new(use_sim);
         match std::env::var("CODING01_MODAL").as_deref() {
-            Ok("settings") => model.modal = Some(model::Modal::Settings),
+            Ok("settings") => {
+                model.settings.tab = std::env::var("CODING01_SETTINGS_TAB")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
+                model.modal = Some(model::Modal::Settings);
+            }
             Ok("info") => {
                 model.info_title = "扩展 · 运行时能力".into();
-                model.load_info(vec!["capabilities".into()]);
+                model.info_text = match model.settings.nullclaw.clone() {
+                    Some(_) => "请在运行环境中查看能力".into(),
+                    None => "未找到 nullclaw 可执行文件".into(),
+                };
                 model.modal = Some(model::Modal::Info);
             }
             _ => {}
         }
-        let [w, h] = fit_size(1280.0, 800.0);
+        if !use_sim {
+            if !model.settings.key_configured {
+                model.modal = Some(model::Modal::Settings);
+            }
+            model.settings.bootstrap();
+        }
         Self {
             model,
             transport,
             requested_size: [w, h],
             resized: false,
-
             autosend: std::env::var("CODING01_SEND").ok(),
             autosend_at: None,
             test_save: std::env::var("CODING01_TEST_SAVE").is_ok(),
             test_save_at: None,
+            screenshot_at: std::time::Instant::now(),
+            screenshot_requested: false,
+            history_at: std::time::Instant::now(),
             attach_path: std::env::var("CODING01_ATTACH")
                 .ok()
                 .map(std::path::PathBuf::from),
@@ -76,215 +99,8 @@ impl App {
     }
 }
 
-impl eframe::App for App {
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.transport.shutdown();
-        self.model.save_history();
-        self.model.gateway.shutdown();
-    }
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 首帧硬同步窗口物理尺寸 = 画布逻辑 × ppp(修复创建期 DPI 感知切换错位)
-        if !self.resized {
-            self.resized = true;
-            let ppp = ctx.pixels_per_point();
-            force_window_size(self.requested_size[0] * ppp, self.requested_size[1] * ppp);
-        }
-        if self.model.gateway.poll() && self.model.gateway_mode && !self.model.is_busy() {
-            self.model.request_reconnect = true;
-        }
-        self.model.client_updater.poll();
-        self.model.nullclaw_updater.poll();
-        if self.model.exit_for_update {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            return;
-        }
-        self.model.settings.poll();
-        self.model.poll_info();
-        for ev in self.transport.poll() {
-            self.model.apply(ev);
-        }
-        // 1.1 看门狗:超时无响应时复位忙碌状态
-        self.model.watchdog_tick();
-        // 1.2 测试钩子:附加附件
-        if let Some(p) = self.attach_path.take() {
-            self.model.add_attachment(ctx, p);
-        }
-        self.model.restore_image_previews(ctx);
-        for event in ctx.input(|i| i.events.clone()) {
-            match event {
-                egui::Event::CompositionStart | egui::Event::CompositionUpdate(_) => {
-                    self.model.composing = true
-                }
-                egui::Event::CompositionEnd(_) => self.model.composing = false,
-                _ => {}
-            }
-        }
-        // 2. 布局:侧栏 + 主列(头部/会话流/输入区/状态栏)
-        ui::sidebar::show(ctx, &mut self.model);
-        ui::chat::show(ctx, &mut self.model);
-        // Apply runtime changes before dispatching new requests.
-        if std::mem::take(&mut self.model.request_reconnect) {
-            if self.model.gateway_mode {
-                self.model.gateway_connected = false;
-                self.model.connection_status = "连接中".into();
-            }
-            self.transport = make_transport(&self.model);
-        }
-        // 3. 出站消息
-        for msg in self.model.drain_outbox() {
-            self.transport.send(msg);
-        }
-        // 3.2 测试钩子:自动提交一条消息
-        if let Some(msg) = self.autosend.clone() {
-            let started = *self.autosend_at.get_or_insert_with(std::time::Instant::now);
-            if started.elapsed().as_secs() >= 2 {
-                self.model.input = msg;
-                self.model.user_submit();
-                self.autosend = None;
-            }
-        }
-        // 3.3 测试钩子:自动执行设置保存
-        if self.test_save {
-            let started = *self
-                .test_save_at
-                .get_or_insert_with(std::time::Instant::now);
-            if started.elapsed().as_secs() >= 2 {
-                let ok = self.model.settings.save();
-                eprintln!("[save] ok={} status={}", ok, self.model.settings.status);
-                self.test_save = false;
-            }
-        }
-        // 4. 常态心跳:事件到达可立即呈现(空闲 5fps,占用可忽略);忙碌时提频
-        if self.model.waiting_approval() {
-            ctx.request_repaint_after(std::time::Duration::from_secs(1));
-        } else if self.model.is_busy() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(60));
-        } else if self.model.settings.fetching
-            || self.model.client_updater.busy
-            || self.model.nullclaw_updater.busy
-            || self.model.info_loading()
-        {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
-        } else {
-            ctx.request_repaint_after(std::time::Duration::from_secs(1));
-        }
-    }
-}
-
-fn make_transport(model: &Model) -> Box<dyn Transport> {
-    // 强制经由 NullClaw WebChannel;不再支持内置直连 Agent
-    Box::new(transport::ws::Ws::connect(
-        &model.runtime_connection,
-        &model.active_sid,
-    ))
-}
-
-fn setup_style(ctx: &egui::Context) {
-    let mut style = (*ctx.style()).clone();
-    style.visuals = egui::Visuals::light();
-    style.visuals.override_text_color = Some(theme::TEXT2);
-    style.visuals.panel_fill = theme::PANEL;
-    style.visuals.window_fill = theme::WHITE;
-    style.visuals.extreme_bg_color = theme::WHITE;
-    style.visuals.selection.bg_fill = theme::SELECTION_BG;
-    style.visuals.selection.stroke = egui::Stroke::NONE;
-    // 只允许显式复制的文本(如代码块)被选择,界面标签禁止拖选
-    style.interaction.selectable_labels = false;
-    style.visuals.widgets.inactive.bg_fill = theme::WHITE;
-    style.visuals.widgets.inactive.weak_bg_fill = theme::WHITE;
-    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, theme::BORDER);
-    style.visuals.widgets.hovered.weak_bg_fill = theme::HOVER;
-    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, theme::BORDER);
-    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, theme::TEXT2);
-    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-    style.spacing.button_padding = egui::vec2(10.0, 6.0);
-    ctx.set_style(style);
-}
-
-fn setup_fonts(ctx: &egui::Context) {
-    let mut fonts = egui::FontDefinitions::default();
-    // 无衬线中文(UI)
-    if let Some(bytes) = load_font(&["msyh.ttc", "msyhl.ttc", "simhei.ttf", "Deng.ttf"]) {
-        fonts
-            .font_data
-            .insert("cjk".to_string(), egui::FontData::from_owned(bytes));
-        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-            fonts
-                .families
-                .entry(family)
-                .or_default()
-                .push("cjk".to_string());
-        }
-    }
-    // Reuse one CJK font payload for all UI families to avoid loading the same TTC twice.
-    fonts.families.insert(
-        egui::FontFamily::Name("o1bold".into()),
-        fonts.families[&egui::FontFamily::Proportional].clone(),
-    );
-    ctx.set_fonts(fonts);
-}
-
-fn load_font(names: &[&str]) -> Option<Vec<u8>> {
-    let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string());
-    for name in names {
-        let path = format!("{}\\Fonts\\{}", windir, name);
-        if let Ok(bytes) = std::fs::read(&path) {
-            return Some(bytes);
-        }
-    }
-    for path in [
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-        "/System/Library/Fonts/PingFang.ttc",
-    ] {
-        if let Ok(bytes) = std::fs::read(path) {
-            return Some(bytes);
-        }
-    }
-    None
-}
-
-/// 必须在创建窗口前开启 DPI 感知:否则 winit 在创建之后切换感知,
-/// 会导致「egui 画布逻辑尺寸 ≠ 实际窗口物理尺寸」(底部面板画出窗外)
-#[cfg(windows)]
-fn enable_dpi_awareness() {
-    #[link(name = "user32")]
-    extern "system" {
-        fn SetProcessDPIAware() -> i32;
-    }
-    unsafe {
-        SetProcessDPIAware();
-    }
-}
-
-#[cfg(not(windows))]
-fn enable_dpi_awareness() {}
-
-/// 依据物理工作区计算不越界的窗口物理尺寸
-#[cfg(windows)]
-fn fit_size(w: f32, h: f32) -> [f32; 2] {
-    #[link(name = "user32")]
-    extern "system" {
-        fn GetSystemMetrics(n: i32) -> i32;
-        fn GetDpiForSystem() -> u32;
-    }
-    // SM_CXFULLSCREEN / SM_CYFULLSCREEN:工作区(去掉任务栏)物理像素
-    let px_w = unsafe { GetSystemMetrics(16) } as f32;
-    let px_h = unsafe { GetSystemMetrics(17) } as f32;
-    let dpi = unsafe { GetDpiForSystem() } as f32;
-    if dpi < 1.0 {
-        return [w, h];
-    }
-    let scale = (dpi / 96.0).max(1.0);
-    [w.min(px_w / scale * 0.96), h.min(px_h / scale * 0.94)]
-}
-
-#[cfg(not(windows))]
-fn fit_size(w: f32, h: f32) -> [f32; 2] {
-    [w, h]
-}
-
 /// 绕过 winit,直接把 OS 窗口客户区调整为 winit 认知的物理尺寸
+/// (创建期 DPI 感知切换使 winit 的 resize 通道失灵,只能用 SetWindowPos 硬同步)
 #[cfg(windows)]
 fn force_window_size(client_w: f32, client_h: f32) {
     #[link(name = "user32")]
@@ -350,28 +166,233 @@ fn force_window_size(client_w: f32, client_h: f32) {
 #[cfg(not(windows))]
 fn force_window_size(_w: f32, _h: f32) {}
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    if updater::handle_update_cli() {
-        return Ok(());
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Ok(path) = std::env::var("CODING01_SCREENSHOT") {
+            if !self.screenshot_requested && self.screenshot_at.elapsed().as_secs() >= 3 {
+                self.screenshot_requested = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
+            }
+            for event in ctx.input(|i| i.events.clone()) {
+                if let egui::Event::Screenshot { image, .. } = event {
+                    let bytes: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+                    let _ = image::save_buffer(
+                        &path,
+                        &bytes,
+                        image.size[0] as u32,
+                        image.size[1] as u32,
+                        image::ColorType::Rgba8,
+                    );
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+        for (title, text) in self.model.settings.tick() {
+            self.model.info_title = title;
+            self.model.info_text = text;
+            self.model.modal = Some(model::Modal::Info);
+        }
+        if std::mem::take(&mut self.model.settings.reconnect) {
+            self.model.request_reconnect = true;
+            self.model.model_name = self.model.settings.model.clone();
+        }
+        // 首帧硬同步窗口物理尺寸 = 画布逻辑 × ppp(修复创建期 DPI 感知切换错位)
+        if !self.resized {
+            self.resized = true;
+            let ppp = ctx.pixels_per_point();
+            force_window_size(self.requested_size[0] * ppp, self.requested_size[1] * ppp);
+            logo::apply_window_icons();
+        }
+        // 1. 拉取事件(网关失败时一次性回退本地演示)
+        let mut events = self.transport.poll();
+        for ev in events.drain(..) {
+            match &ev {
+                Event::Paired { token } => {
+                    config::ClientCfg::save_token(token);
+                }
+                _ => {}
+            }
+            self.model.apply(ev);
+        }
+        // 1.1 看门狗:超时无响应时复位忙碌状态
+        self.model.watchdog_tick();
+        // 1.2 测试钩子:附加附件
+        if let Some(p) = self.attach_path.take() {
+            self.model.add_attachment(ctx, p);
+        }
+        // 2. 布局:侧栏 + 主列(头部/会话流/输入区/状态栏)
+        ui::sidebar::show(ctx, &mut self.model);
+        ui::chat::show(ctx, &mut self.model);
+        // 2.1 打字机推进(单次返回的流式呈现,低刷新率)
+        if self.model.is_typing() {
+            self.model.tick();
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        // 3. 出站消息
+        for msg in self.model.drain_outbox() {
+            self.transport.send(msg);
+        }
+        // 3.1 设置保存后重连网关
+        if std::mem::take(&mut self.model.request_reconnect) {
+            let cfg = config::ClientCfg::load();
+            self.transport = Box::new(transport::ws::Ws::connect(&cfg));
+        }
+        // 3.2 测试钩子:自动提交一条消息
+        if let Some(msg) = self.autosend.clone() {
+            let started = *self.autosend_at.get_or_insert_with(std::time::Instant::now);
+            if started.elapsed().as_secs() >= 2 {
+                self.model.input = msg;
+                self.model.user_submit();
+                self.autosend = None;
+            }
+        }
+        // 3.3 测试钩子:自动执行设置保存
+        if self.test_save {
+            let started = *self
+                .test_save_at
+                .get_or_insert_with(std::time::Instant::now);
+            if started.elapsed().as_secs() >= 2 {
+                let ok = self.model.settings.save();
+                eprintln!("[save] ok={} status={}", ok, self.model.settings.status);
+                self.test_save = false;
+            }
+        }
+        if self.history_at.elapsed().as_secs() >= 5 {
+            history::save(&mut self.model);
+            self.history_at = std::time::Instant::now();
+        }
+        // 4. 常态心跳:事件到达可立即呈现(空闲 5fps,占用可忽略);忙碌时提频
+        if self.model.is_busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(60));
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
     }
+}
+
+fn setup_style(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+    style.visuals = egui::Visuals::light();
+    style.visuals.override_text_color = Some(theme::TEXT2);
+    style.visuals.panel_fill = theme::PANEL;
+    style.visuals.window_fill = theme::WHITE;
+    style.visuals.extreme_bg_color = theme::WHITE;
+    style.visuals.selection.bg_fill = theme::SELECTION_BG;
+    style.visuals.selection.stroke = egui::Stroke::NONE;
+    // 只允许显式复制的文本(如代码块)被选择,界面标签禁止拖选
+    style.interaction.selectable_labels = false;
+    style.visuals.widgets.inactive.bg_fill = theme::WHITE;
+    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, theme::TEXT2);
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.button_padding = egui::vec2(10.0, 6.0);
+    ctx.set_style(style);
+}
+
+fn setup_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    // 无衬线中文(UI)
+    if let Some(bytes) = load_font(&["msyh.ttc", "msyhl.ttc", "simhei.ttf", "Deng.ttf"]) {
+        fonts
+            .font_data
+            .insert("cjk".to_string(), egui::FontData::from_owned(bytes));
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            fonts
+                .families
+                .entry(family)
+                .or_default()
+                .push("cjk".to_string());
+        }
+    }
+    // 衬线中文已不启用(正文使用无衬线),避免额外字体图集占用
+    // 粗体(标题/强调)
+    if let Some(bytes) = load_font(&["msyhbd.ttc", "msyh.ttc", "simhei.ttf"]) {
+        fonts
+            .font_data
+            .insert("boldcjk".to_string(), egui::FontData::from_owned(bytes));
+        let fam = egui::FontFamily::Name("o1bold".into());
+        let list = fonts.families.entry(fam).or_default();
+        list.push("boldcjk".to_string());
+        list.push("cjk".to_string());
+    }
+    let fallback = fonts
+        .families
+        .get(&egui::FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    fonts
+        .families
+        .entry(egui::FontFamily::Name("o1bold".into()))
+        .or_insert(fallback);
+    ctx.set_fonts(fonts);
+}
+
+fn load_font(names: &[&str]) -> Option<Vec<u8>> {
+    for path in [
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+    ] {
+        if let Ok(bytes) = std::fs::read(path) {
+            return Some(bytes);
+        }
+    }
+
+    let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string());
+    for name in names {
+        let path = format!("{}\\Fonts\\{}", windir, name);
+        if let Ok(bytes) = std::fs::read(&path) {
+            return Some(bytes);
+        }
+    }
+    None
+}
+
+/// 必须在创建窗口前开启 DPI 感知:否则 winit 在创建之后切换感知,
+/// 会导致「egui 画布逻辑尺寸 ≠ 实际窗口物理尺寸」(底部面板画出窗外)
+#[cfg(windows)]
+fn enable_dpi_awareness() {
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetProcessDPIAware() -> i32;
+    }
+    unsafe {
+        SetProcessDPIAware();
+    }
+}
+
+#[cfg(not(windows))]
+fn enable_dpi_awareness() {}
+
+/// 依据物理工作区计算不越界的窗口物理尺寸
+#[cfg(windows)]
+fn fit_size(w: f32, h: f32) -> [f32; 2] {
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetSystemMetrics(n: i32) -> i32;
+        fn GetDpiForSystem() -> u32;
+    }
+    // SM_CXFULLSCREEN / SM_CYFULLSCREEN:工作区(去掉任务栏)物理像素
+    let px_w = unsafe { GetSystemMetrics(16) } as f32;
+    let px_h = unsafe { GetSystemMetrics(17) } as f32;
+    let dpi = unsafe { GetDpiForSystem() } as f32;
+    if dpi < 1.0 {
+        return [w, h];
+    }
+    [w.min(px_w * 0.92), h.min(px_h * 0.90)]
+}
+
+#[cfg(not(windows))]
+fn fit_size(w: f32, h: f32) -> [f32; 2] {
+    [w, h]
+}
+
+fn main() -> eframe::Result<()> {
     enable_dpi_awareness();
-    std::fs::create_dir_all(config::app_dir())?;
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let instance = options.open(config::app_dir().join("client.lock"))?;
-    if instance.try_lock().is_err() {
-        rfd::MessageDialog::new()
-            .set_title("01Code")
-            .set_description("01Code 已在运行，请切换到现有窗口。")
-            .show();
-        return Ok(());
-    }
-    let [w, h] = fit_size(1280.0, 800.0);
+    let [w, h] = if std::env::var("CODING01_NARROW").is_ok() {
+        [760.0, 560.0]
+    } else {
+        fit_size(1150.0, 660.0)
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("01 编码")
@@ -380,6 +401,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_icon(logo::window_icon()),
         ..Default::default()
     };
-    eframe::run_native("01 编码", options, Box::new(|cc| Box::new(App::new(cc))))?;
-    Ok(())
+    eframe::run_native("01 编码", options, Box::new(|cc| Box::new(App::new(cc))))
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        history::flush(&self.model);
+        self.model.settings.cancel_login();
+        let _ = runtime::stop();
+    }
 }
