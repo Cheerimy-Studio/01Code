@@ -46,6 +46,12 @@ fn settings_window(ctx: &egui::Context, model: &mut Model) {
             egui::Frame::window(&ctx.style())
                 .fill(t::WHITE)
                 .rounding(12.0)
+                .shadow(egui::epaint::Shadow {
+                    offset: Vec2::new(0.0, 8.0),
+                    blur: 26.0,
+                    spread: 0.0,
+                    color: egui::Color32::from_rgba_unmultiplied(15, 23, 42, 32),
+                })
                 .inner_margin(16.0),
         )
         .collapsible(false)
@@ -181,9 +187,9 @@ fn settings_window(ctx: &egui::Context, model: &mut Model) {
                                     .num_columns(3)
                                     .spacing([24.0, 8.0])
                                     .show(ui, |ui| {
-                                        ui.label("日期");
-                                        ui.label("请求");
-                                        ui.label("费用");
+                                        ui.label(RichText::new("日期").size(11.5).color(t::FAINT));
+                                        ui.label(RichText::new("请求").size(11.5).color(t::FAINT));
+                                        ui.label(RichText::new("费用").size(11.5).color(t::FAINT));
                                         ui.end_row();
                                         for r in rows {
                                             ui.label(r["day"].as_str().unwrap_or(""));
@@ -267,8 +273,6 @@ fn settings_window(ctx: &egui::Context, model: &mut Model) {
                         }
                         _ => {
                             ui.heading("NullClaw");
-                            ui.add_space(8.0);
-                            ui.label(&s.runtime_status);
                             ui.add_space(12.0);
                             ui.add_enabled_ui(!s.busy, |ui| {
                                 ui.horizontal_wrapped(|ui| {

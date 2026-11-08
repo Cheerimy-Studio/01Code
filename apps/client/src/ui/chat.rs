@@ -105,7 +105,7 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
 // ───────────────────────── 头部 ─────────────────────────
 
 fn header(ui: &mut egui::Ui, model: &Model) {
-    egui::Frame::none()
+    let hr = egui::Frame::none()
         .fill(t::WHITE)
         .inner_margin(egui::Margin {
             left: 18.0,
@@ -136,7 +136,16 @@ fn header(ui: &mut egui::Ui, model: &Model) {
                     );
                 }
             });
-        });
+        })
+        .response
+        .rect;
+    ui.painter().line_segment(
+        [
+            Pos2::new(hr.left(), hr.bottom()),
+            Pos2::new(hr.right(), hr.bottom()),
+        ],
+        Stroke::new(1.0_f32, t::BORDER),
+    );
 }
 
 // ───────────────────────── 会话流 ─────────────────────────
@@ -655,14 +664,24 @@ fn composer(ui: &mut egui::Ui, model: &mut Model) {
         .fill(t::WHITE)
         .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0xE6, 0xEB, 0xF2)))
         .rounding(Rounding::same(18.0))
+        .shadow(egui::epaint::Shadow {
+            offset: Vec2::new(0.0, 4.0),
+            blur: 14.0,
+            spread: 0.0,
+            color: Color32::from_rgba_unmultiplied(15, 23, 42, 20),
+        })
         .inner_margin(egui::Margin::symmetric(14.0, 10.0))
         .show(ui, |ui| {
             let modal_open = model.modal.is_some();
-            // 待发送附件预览(图片缩略图 / 文件芯片,可移除)
+            // 待发送附件预览(单行横向滚动,图片缩略图 / 文件芯片,可移除)
             if !model.pending.is_empty() {
                 let mut remove: Option<usize> = None;
-                ui.horizontal_wrapped(|ui| {
-                    for (i, att) in model.pending.iter().enumerate() {
+                egui::ScrollArea::horizontal()
+                    .id_source("pending-attachments")
+                    .max_height(56.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            for (i, att) in model.pending.iter().enumerate() {
                         let (r, _) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::hover());
                         let p = ui.painter_at(r);
                         if let Some(tex) = &att.texture {
@@ -724,6 +743,7 @@ fn composer(ui: &mut egui::Ui, model: &mut Model) {
                         }
                     }
                 });
+                    });
                 if let Some(i) = remove {
                     model.remove_attachment(i);
                 }
@@ -748,8 +768,14 @@ fn composer(ui: &mut egui::Ui, model: &mut Model) {
             if !modal_open && ui.memory(|m| m.focused().is_none()) {
                 resp.request_focus();
             }
+            let can_send = model.settings.key_configured;
             if enter_now {
-                model.user_submit();
+                if can_send {
+                    model.user_submit();
+                } else {
+                    model.settings.tab = 0;
+                    model.modal = Some(crate::model::Modal::Settings);
+                }
             }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -792,7 +818,12 @@ fn composer(ui: &mut egui::Ui, model: &mut Model) {
                         .rounding(Rounding::same(999.0)),
                     );
                     if send.clicked() && !busy {
-                        model.user_submit();
+                        if can_send {
+                            model.user_submit();
+                        } else {
+                            model.settings.tab = 0;
+                            model.modal = Some(crate::model::Modal::Settings);
+                        }
                     }
                     if ui.available_width() > 140.0 {
                         ui.label(RichText::new(&model.model_name).size(12.5).color(t::FAINT));
