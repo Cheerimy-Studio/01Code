@@ -34,11 +34,18 @@ impl Transport for Sim {
 
     fn send(&mut self, msg: InMsg) {
         match msg {
-            InMsg::UserText { sid, text } => {
-                let tx = self.tx.clone();
+            InMsg::UserText { sid, text, .. } => {
+                let (tx, rx) = mpsc::channel();
+                self.rx = rx;
+                self.tx = tx.clone();
                 thread::spawn(move || canned_reply(tx, sid, text));
             }
             InMsg::Approval { .. } => {}
+            InMsg::Cancel => {
+                let (tx, rx) = mpsc::channel();
+                self.tx = tx;
+                self.rx = rx;
+            }
         }
     }
 }
@@ -116,16 +123,47 @@ fn canned_main(tx: Sender<Event>) {
     tx.send(Event::StateChange {
         sid: sid.into(),
         todo: vec![
-            TodoItem { title: "定位浮点累加根因".into(), state: TodoState::Done },
-            TodoItem { title: "改为整数「分」运算".into(), state: TodoState::Done },
-            TodoItem { title: "补充单元测试".into(), state: TodoState::Done },
-            TodoItem { title: "lint 校验".into(), state: TodoState::Running },
-            TodoItem { title: "生成变更说明 commit".into(), state: TodoState::Pending },
+            TodoItem {
+                title: "定位浮点累加根因".into(),
+                state: TodoState::Done,
+            },
+            TodoItem {
+                title: "改为整数「分」运算".into(),
+                state: TodoState::Done,
+            },
+            TodoItem {
+                title: "补充单元测试".into(),
+                state: TodoState::Done,
+            },
+            TodoItem {
+                title: "lint 校验".into(),
+                state: TodoState::Running,
+            },
+            TodoItem {
+                title: "生成变更说明 commit".into(),
+                state: TodoState::Pending,
+            },
         ],
     })
     .ok();
-    tool(&tx, sid, "c01", "search", "cart · 3 处命中 · 0.4s", 700, None);
-    tool(&tx, sid, "c02", "read", "src/cart/cart.ts · L120-L168", 500, None);
+    tool(
+        &tx,
+        sid,
+        "c01",
+        "search",
+        "cart · 3 处命中 · 0.4s",
+        700,
+        None,
+    );
+    tool(
+        &tx,
+        sid,
+        "c02",
+        "read",
+        "src/cart/cart.ts · L120-L168",
+        500,
+        None,
+    );
     tool(
         &tx,
         sid,
@@ -156,8 +194,20 @@ fn canned_main(tx: Sender<Event>) {
         1300,
         None,
     );
-    tool(&tx, sid, "c05", "shell", "pnpm lint --fix · 0 warnings", 1500, None);
-    stream_text(&tx, sid, "修复完成,测试全部通过;可以生成 commit 提交本次变更。");
+    tool(
+        &tx,
+        sid,
+        "c05",
+        "shell",
+        "pnpm lint --fix · 0 warnings",
+        1500,
+        None,
+    );
+    stream_text(
+        &tx,
+        sid,
+        "修复完成,测试全部通过;可以生成 commit 提交本次变更。",
+    );
     tx.send(Event::CtxUsage {
         sid: sid.into(),
         used: 133_000.0,
@@ -180,14 +230,27 @@ fn canned_reply(tx: Sender<Event>, sid: String, text: String) {
         &sid,
         &format!("收到:「{}」。我先梳理影响面,再动手。", short),
     );
-    tool(&tx, &sid, "r1", "read", "src/cart/cart.ts · 全文", 500, None);
+    tool(
+        &tx,
+        &sid,
+        "r1",
+        "read",
+        "src/cart/cart.ts · 全文",
+        500,
+        None,
+    );
     stream_text(&tx, &sid, "已确认相关实现,继续按计划执行中。");
     tx.send(Event::CtxUsage {
-        sid,
+        sid: sid.clone(),
         used: 136_000.0,
         limit: 200_000.0,
     })
     .ok();
+    let _ = tx.send(Event::SessionDone {
+        sid,
+        cost: String::new(),
+        ms: 0,
+    });
 }
 
 #[allow(unused)]

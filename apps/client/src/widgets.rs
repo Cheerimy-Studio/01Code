@@ -1,7 +1,9 @@
 //! 通用绘制组件:芯片 / 头像 / 上下文仪表 / 原生小图标
 #![allow(dead_code)]
 
-use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Rounding, Sense, Shape, Stroke, Ui, Vec2};
+use eframe::egui::{
+    self, Color32, Painter, Pos2, Rect, RichText, Rounding, Sense, Shape, Stroke, Ui, Vec2,
+};
 
 use crate::theme as t;
 
@@ -20,7 +22,7 @@ pub fn chip(ui: &mut Ui, text: &str, kind: Chip) {
     };
     egui::Frame::none()
         .fill(bg)
-        .stroke(Stroke::new(1.0, br))
+        .stroke(Stroke::new(1.0_f32, br))
         .rounding(Rounding::same(999.0))
         .inner_margin(egui::Margin::symmetric(9.0, 2.5))
         .show(ui, |ui| {
@@ -44,7 +46,11 @@ pub fn gradient_rect(p: &Painter, rect: Rect, rounding: f32) {
             i as f32 / (steps - 1) as f32,
         );
         let y0 = rect.top() + i as f32 * h;
-        let r = if i == 0 || i == steps - 1 { rounding } else { 0.0 };
+        let r = if i == 0 || i == steps - 1 {
+            rounding
+        } else {
+            0.0
+        };
         p.add(Shape::rect_filled(
             Rect::from_min_max(
                 Pos2::new(rect.left(), y0),
@@ -86,10 +92,7 @@ pub fn meter(ui: &mut Ui, frac: f32) {
     let p = ui.painter();
     p.add(Shape::rect_filled(rect, Rounding::same(3.0), t::BORDER));
     if frac > 0.0 {
-        let fill = Rect::from_min_size(
-            rect.min,
-            Vec2::new(rect.width() * frac.min(1.0), 6.0),
-        );
+        let fill = Rect::from_min_size(rect.min, Vec2::new(rect.width() * frac.min(1.0), 6.0));
         gradient_rect(p, fill, 3.0);
     }
 }
@@ -98,21 +101,25 @@ pub fn icon_check(p: &Painter, c: Pos2, s: f32, color: Color32) {
     let p1 = Pos2::new(c.x - s * 0.55, c.y + s * 0.05);
     let p2 = Pos2::new(c.x - s * 0.10, c.y + s * 0.42);
     let p3 = Pos2::new(c.x + s * 0.55, c.y - s * 0.40);
-    p.add(Shape::line(vec![p1, p2, p3], Stroke::new(2.4, color)));
+    p.add(Shape::line(vec![p1, p2, p3], Stroke::new(2.4_f32, color)));
 }
 
 pub fn icon_x(p: &Painter, c: Pos2, s: f32, color: Color32) {
     let d = s * 0.4;
     p.add(Shape::line_segment(
         [Pos2::new(c.x - d, c.y - d), Pos2::new(c.x + d, c.y + d)],
-        Stroke::new(2.4, color),
+        Stroke::new(2.4_f32, color),
     ));
     p.add(Shape::line_segment(
         [Pos2::new(c.x + d, c.y - d), Pos2::new(c.x - d, c.y + d)],
-        Stroke::new(2.4, color),
+        Stroke::new(2.4_f32, color),
     ));
 }
 
 pub fn icon_circle(p: &Painter, c: Pos2, s: f32, color: Color32) {
-    p.add(Shape::circle_stroke(c, s * 0.42, Stroke::new(1.8, color)));
+    p.add(Shape::circle_stroke(
+        c,
+        s * 0.42,
+        Stroke::new(1.8_f32, color),
+    ));
 }

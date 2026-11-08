@@ -1,128 +1,230 @@
-//! 客户端配置:自动发现本地 NullClaw 配置(~/.nullclaw/config.json → channels.web)
-#![allow(dead_code)]
-
-use std::fs;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Clone, Debug)]
-pub struct ClientCfg {
-    /// WebChannel v1 地址(由 nullclaw channels.web 推导)
-    pub ws_url: String,
-    /// 鉴权凭据:token 模式为 auth_token,配对模式为 None(走 pairing_request)
-    pub token: Option<String>,
-    /// 网关 HTTP 端口(设置页重启网关用)
-    pub gateway_port: u16,
+pub fn home_dir() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+pub fn app_dir() -> PathBuf {
+    std::env::var_os("CODING01_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("APPDATA")
+                .map(PathBuf::from)
+                .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
+                .unwrap_or_else(|| home_dir().join(".config"))
+                .join("coding01")
+        })
 }
 
+pub fn bounded_json<T: serde::Serialize>(value: &T, limit: usize) -> Result<Vec<u8>, String> {
+    struct Buffer {
+        bytes: Vec<u8>,
+        limit: usize,
+    }
+    impl std::io::Write for Buffer {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            if b.len() > self.limit.saturating_sub(self.bytes.len()) {
+                return Err(std::io::Error::other("JSON 大小超过限制"));
+            }
+            self.bytes.extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut out = Buffer {
+        bytes: Vec::new(),
+        limit,
+    };
+    serde_json::to_writer(&mut out, value).map_err(|e| e.to_string())?;
+    Ok(out.bytes)
+}
+
+/// Replace without truncating a working configuration on serialization/write failure.
+pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("invalid path"))?;
+    std::fs::create_dir_all(parent)?;
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|e| e.error)?;
+    Ok(())
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(default)]
+pub struct ClientCfg {
+    pub ws_url: String,
+    pub token: Option<String>,
+    pub pairing: bool,
+    pub gateway_port: u16,
+}
+impl Default for ClientCfg {
+    fn default() -> Self {
+        Self {
+            ws_url: "ws://127.0.0.1:32123/ws".into(),
+            token: None,
+            pairing: false,
+            gateway_port: 32100,
+        }
+    }
+}
 impl ClientCfg {
-    /// 从本地 NullClaw 配置自动发现 WebChannel 参数
+    pub fn validate(&self) -> Result<reqwest::Url, String> {
+        let u = reqwest::Url::parse(&self.ws_url).map_err(|_| "WebSocket 地址无效")?;
+        if !matches!(u.scheme(), "ws" | "wss")
+            || u.host_str().is_none()
+            || !u.username().is_empty()
+            || u.password().is_some()
+            || u.query().is_some()
+            || u.fragment().is_some()
+        {
+            return Err("WebSocket 地址须不含凭据、查询或片段".into());
+        }
+        let local = matches!(
+            u.host_str(),
+            Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
+        );
+        if !local && (u.scheme() != "wss" || self.pairing) {
+            return Err("远程网关须使用 WSS 和通道令牌".into());
+        }
+        if u.port_or_known_default() == Some(0) || self.gateway_port == 0 {
+            return Err("端口不能为 0".into());
+        }
+        if self
+            .token
+            .as_ref()
+            .is_some_and(|t| t.chars().any(char::is_control))
+        {
+            return Err("通道令牌不能包含控制字符".into());
+        }
+        Ok(u)
+    }
     pub fn discover() -> Option<Self> {
-        let home = std::env::var("USERPROFILE").ok()?;
-        let path = PathBuf::from(home)
-            .join(".nullclaw")
-            .join("config.json");
-        let text = fs::read_to_string(path).ok()?;
-        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-        let acct = v
-            .get("channels")?
-            .get("web")?
-            .get("accounts")?
-            .get("default")?
-            .clone();
-        let listen = acct
+        let cfg = crate::settings::read_nullclaw()?;
+        let acct = cfg
+            .pointer("/channels/web/accounts/default")
+            .or_else(|| cfg.pointer("/channels/web"))?;
+        let host = match acct
             .get("listen")
-            .and_then(serde_json::Value::as_str)
+            .and_then(|v| v.as_str())
             .unwrap_or("127.0.0.1")
-            .to_string();
+        {
+            "0.0.0.0" => "127.0.0.1",
+            "::" => "[::1]",
+            h => h,
+        };
+        let host = if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]")
+        } else {
+            host.to_string()
+        };
         let port = acct
             .get("port")
-            .and_then(serde_json::Value::as_u64)
+            .and_then(|v| v.as_u64())
+            .filter(|p| *p > 0 && *p <= 65535)
             .unwrap_or(32123);
-        let path = acct
-            .get("path")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("/ws")
-            .to_string();
-        let mode = acct
-            .get("message_auth_mode")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("pairing")
-            .to_string();
-        let auth = acct
-            .get("auth_token")
-            .and_then(serde_json::Value::as_str)
-            .map(String::from);
-        let token = if mode == "token" { auth } else { None };
+        let path = acct.get("path").and_then(|v| v.as_str()).unwrap_or("/ws");
         Some(Self {
-            ws_url: format!("ws://{}:{}{}", listen, port, path),
-            token,
-            gateway_port: Self::load_gateway_port(),
+            ws_url: format!("ws://{host}:{port}{path}"),
+            pairing: acct
+                .get("message_auth_mode")
+                .and_then(|v| v.as_str())
+                .unwrap_or("pairing")
+                == "pairing",
+            token: acct
+                .get("auth_token")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            ..Self::default()
         })
     }
-
-    fn load_gateway_port() -> u16 {
-        let Ok(text) = fs::read_to_string(Self::client_cfg_path()) else {
-            return 32100;
-        };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-            return 32100;
-        };
-        v.get("gateway_port")
-            .and_then(serde_json::Value::as_u64)
-            .map(|p| p as u16)
-            .unwrap_or(32100)
-    }
-
-    fn client_cfg_path() -> PathBuf {
-        let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(base).join("coding01").join("config.json")
-    }
-
-    /// 设置页保存连接参数(ws 地址 / 通道令牌 / 网关端口)
-    pub fn save_connection(web_port: u64, token: Option<&str>) {
-        let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-        let dir = PathBuf::from(base).join("coding01");
-        let _ = fs::create_dir_all(&dir);
-        let gateway_port = Self::load_gateway_port();
-        let body = serde_json::json!({
-            "ws_url": format!("ws://127.0.0.1:{}/ws", web_port),
-            "token": token,
-            "gateway_port": gateway_port,
-        });
-        let _ = fs::write(
-            dir.join("config.json"),
-            serde_json::to_string_pretty(&body).unwrap_or_default(),
-        );
-    }
-
-    fn _unused_path(&self) {
-        let _ = Self::client_cfg_path();
-    }
-
-    /// 发现失败时的兜底默认值
     pub fn load() -> Self {
-        Self::discover().unwrap_or(Self {
-            ws_url: "ws://127.0.0.1:32123/ws".to_string(),
-            token: None,
-            gateway_port: Self::load_gateway_port(),
-        })
+        let preferences = app_dir().join("preferences.json");
+        let current = std::fs::metadata(&preferences)
+            .ok()
+            .filter(|m| m.len() <= 4 * 1024 * 1024)
+            .and_then(|_| std::fs::read(&preferences).ok())
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| v.get("connection").cloned())
+            .and_then(|v| serde_json::from_value(v).ok());
+        current
+            .or_else(|| {
+                std::fs::read(app_dir().join("connection.json"))
+                    .ok()
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+            })
+            .or_else(Self::discover)
+            .unwrap_or_default()
     }
+}
 
-    /// pairing_result 取得 access_token 后持久化(仅用于配对模式)
-    pub fn save_token(token: &str) {
-        let mut cfg = Self::load();
-        cfg.token = Some(token.to_string());
-        let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-        let dir = PathBuf::from(base).join("coding01");
-        let _ = fs::create_dir_all(&dir);
-        let body = serde_json::json!({
-            "ws_url": cfg.ws_url,
-            "token": cfg.token,
-            "gateway_port": cfg.gateway_port,
-        });
-        let _ = fs::write(
-            dir.join("config.json"),
-            serde_json::to_string_pretty(&body).unwrap_or_default(),
-        );
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn private_write_replaces_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        write_private(&path, b"first").unwrap();
+        write_private(&path, b"second").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use super::*;
+    #[test]
+    fn serializer_enforces_size_before_writing() {
+        let value = serde_json::json!({"text":"你好"});
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert_eq!(bounded_json(&value, bytes.len()).unwrap(), bytes);
+        assert!(bounded_json(&value, bytes.len() - 1).is_err());
+    }
+    #[test]
+    fn websocket_validation_uses_standard_ports_and_protects_credentials() {
+        let mut c = ClientCfg {
+            ws_url: "ws://localhost/ws".into(),
+            ..ClientCfg::default()
+        };
+        assert_eq!(c.validate().unwrap().port_or_known_default(), Some(80));
+        for url in [
+            "ws://example.com/ws",
+            "wss://user@example.com/ws",
+            "wss://example.com/ws?token=secret",
+            "ws://localhost:0/ws",
+        ] {
+            c.ws_url = url.into();
+            assert!(c.validate().is_err(), "{url}");
+        }
+        c.ws_url = "wss://example.com/ws".into();
+        c.pairing = true;
+        assert!(c.validate().is_err());
+        c.pairing = false;
+        assert!(c.validate().is_ok());
+        c.token = Some("unsafe\nvalue".into());
+        assert!(c.validate().is_err());
     }
 }

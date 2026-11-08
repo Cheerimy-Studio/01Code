@@ -9,20 +9,20 @@ pub enum Role {
     Assistant,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TodoState {
     Pending,
     Running,
     Done,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TodoItem {
     pub title: String,
     pub state: TodoState,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Diff {
     pub removed: Vec<String>,
     pub added: Vec<String>,
@@ -30,6 +30,10 @@ pub struct Diff {
 
 #[derive(Clone, Debug)]
 pub enum Event {
+    ConnectionStatus {
+        ready: bool,
+        text: String,
+    },
     /// 客户端本地新建会话
     SessionStart {
         sid: String,
@@ -40,8 +44,16 @@ pub enum Event {
         sid: String,
         role: Role,
     },
+    ContextSnapshot {
+        sid: String,
+        messages: Vec<Value>,
+    },
     /// 流式增量
     MessageDelta {
+        sid: String,
+        text: String,
+    },
+    ReasoningDelta {
         sid: String,
         text: String,
     },
@@ -114,30 +126,21 @@ impl Event {
             .unwrap_or_default()
             .to_string();
         let p = v.get("payload").cloned().unwrap_or(Value::Null);
-        let summary = |val: &Value, max: usize| -> String {
+        let summary = |val: &Value, _max: usize| -> String {
             match val {
-                Value::String(s) => {
-                    let t: String = s.chars().take(max).collect();
-                    t
-                }
-                Value::Object(o) => {
-                    let mut parts = Vec::new();
-                    for (k, val) in o.iter().take(3) {
-                        let raw = match val {
-                            Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        };
-                        let short: String = raw.chars().take(48).collect();
-                        parts.push(format!("{}={}", k, short));
-                    }
-                    parts.join(" ")
-                }
+                Value::String(s) => s.clone(),
                 Value::Null => String::new(),
-                other => {
-                    let t = other.to_string();
-                    t.chars().take(max).collect()
-                }
+                other => serde_json::to_string_pretty(other).unwrap_or_default(),
             }
+        };
+        let call_id = || {
+            p.get("tool_call_id")
+                .or_else(|| p.get("call_id"))
+                .or_else(|| p.get("id"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&request_id)
+                .to_string()
         };
         match typ {
             "pairing_result" => {
@@ -175,15 +178,17 @@ impl Event {
             "tool_call" => {
                 let name = p
                     .get("name")
+                    .or_else(|| p.get("tool"))
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
                 let args = p.get("arguments").cloned().unwrap_or(Value::Null);
                 let meta = summary(&args, 96);
-                let call = if request_id.is_empty() {
+                let id = call_id();
+                let call = if id.is_empty() {
                     format!("auto-{}", auto_call)
                 } else {
-                    request_id
+                    id
                 };
                 Some(Event::ToolCall {
                     sid,
@@ -193,23 +198,25 @@ impl Event {
                 })
             }
             "tool_result" => {
-                let ok = p.get("ok").and_then(Value::as_bool).unwrap_or(true);
+                let ok = p
+                    .get("ok")
+                    .and_then(Value::as_bool)
+                    .unwrap_or_else(|| p.get("error").is_none_or(Value::is_null));
                 let meta = if ok {
                     let r = p.get("result").cloned().unwrap_or(Value::Null);
                     summary(&r, 96)
                 } else {
-                    let e = p
-                        .get("error")
-                        .and_then(Value::as_str)
-                        .unwrap_or("执行失败");
+                    let e = p.get("error").and_then(Value::as_str).unwrap_or("执行失败");
                     format!("失败:{}", e)
                 };
                 Some(Event::ToolResult {
                     sid,
-                    call: request_id,
+                    call: call_id(),
                     ok,
                     meta,
-                    diff: None,
+                    diff: p
+                        .get("diff")
+                        .and_then(|d| serde_json::from_value(d.clone()).ok()),
                 })
             }
             "approval_request" => {
@@ -225,7 +232,7 @@ impl Event {
                     .to_string();
                 Some(Event::ApprovalRequest {
                     sid,
-                    request_id: request_id,
+                    request_id,
                     action,
                     reason,
                 })

@@ -1,14 +1,23 @@
-use eframe::egui::{self, Button, Color32, FontId, Pos2, RichText, Rounding, Sense, Shape, Stroke, Vec2};
+use eframe::egui::{
+    self, Button, Color32, FontId, Pos2, RichText, Rounding, Sense, Shape, Stroke, Vec2,
+};
 
 use crate::icons;
 use crate::logo;
 use crate::model::{Modal, Model, Session};
-use crate::settings;
+
 use crate::theme as t;
 use crate::util::rel_time;
 
 /// 会话行:状态点 + 标题(裁切) + 相对时间
-fn session_row(ui: &mut egui::Ui, s: &Session, selected: bool, clicks: &mut Vec<String>) {
+fn session_row(
+    ui: &mut egui::Ui,
+    s: &Session,
+    selected: bool,
+    clicks: &mut Vec<String>,
+    edits: &mut Vec<(String, String)>,
+    exports: &mut Vec<String>,
+) {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 34.0), Sense::click());
     let bg = if selected {
@@ -52,13 +61,20 @@ fn session_row(ui: &mut egui::Ui, s: &Session, selected: bool, clicks: &mut Vec<
     if resp.clicked() {
         clicks.push(s.sid.clone());
     }
+    resp.context_menu(|ui| {
+        ui.label("会话名称");
+        let mut title = s.title.clone();
+        if ui.text_edit_singleline(&mut title).changed() && !title.trim().is_empty() {
+            edits.push((s.sid.clone(), title));
+        }
+        if ui.button("复制为 Markdown").clicked() {
+            exports.push(s.sid.clone());
+            ui.close_menu();
+        }
+    });
 }
 
-fn menu_row(
-    ui: &mut egui::Ui,
-    label: &str,
-    icon: fn(&egui::Painter, Pos2, f32, Color32),
-) -> bool {
+fn menu_row(ui: &mut egui::Ui, label: &str, icon: fn(&egui::Painter, Pos2, f32, Color32)) -> bool {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 40.0), Sense::click());
     if resp.hovered() {
@@ -91,13 +107,19 @@ fn icon_button(ui: &mut egui::Ui, icon: fn(&egui::Painter, Pos2, f32, Color32)) 
 
 pub fn show(ctx: &egui::Context, model: &mut Model) {
     let mut clicks: Vec<String> = Vec::new();
+    let mut edits = Vec::new();
+    let mut exports = Vec::new();
     egui::SidePanel::left("left")
-        .exact_width(248.0)
+        .exact_width(if ctx.screen_rect().width() < 820.0 {
+            200.0
+        } else {
+            260.0
+        })
         .resizable(false)
         .frame(
             egui::Frame::none()
                 .fill(t::PANEL)
-                .stroke(Stroke::new(1.0, t::BORDER))
+                .stroke(Stroke::new(1.0_f32, t::BORDER))
                 .inner_margin(egui::Margin::same(14.0)),
         )
         .show(ctx, |ui| {
@@ -147,7 +169,7 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                     [w, 42.0],
                     Button::new(RichText::new("＋  新会话").size(13.5).color(t::TEXT))
                         .fill(t::WHITE)
-                        .stroke(Stroke::new(1.0, t::BORDER))
+                        .stroke(Stroke::new(1.0_f32, t::BORDER))
                         .rounding(Rounding::same(10.0)),
                 )
                 .clicked()
@@ -159,30 +181,24 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
             // 菜单(全部可用)
             if menu_row(ui, "扩展", icons::grid4) {
                 model.info_title = "扩展 · 运行时能力".into();
-                model.info_text = match model.settings.nullclaw.clone() {
-                    Some(bin) => settings::run_cli(&bin, &["capabilities"]),
-                    None => "未找到 nullclaw 可执行文件".into(),
-                };
+                model.load_info(vec!["capabilities".into()]);
                 model.modal = Some(Modal::Info);
             }
             if menu_row(ui, "定时任务", icons::clock) {
                 model.info_title = "定时任务".into();
-                model.info_text = match model.settings.nullclaw.clone() {
-                    Some(bin) => settings::run_cli(&bin, &["cron", "list"]),
-                    None => "未找到 nullclaw 可执行文件".into(),
-                };
+                model.load_info(vec!["cron".into(), "list".into()]);
                 model.modal = Some(Modal::Info);
             }
             if menu_row(ui, "模型", icons::sliders) {
-                model.info_title = "模型目录".into();
-                model.info_text = match model.settings.nullclaw.clone() {
-                    Some(bin) => settings::run_cli(&bin, &["models", "list"]),
-                    None => "未找到 nullclaw 可执行文件".into(),
-                };
-                model.modal = Some(Modal::Info);
+                model.settings.prefs = model.runtime.clone();
+                model.settings.connection = model.runtime_connection.clone();
+                model.settings.tab = 0;
+                model.modal = Some(Modal::Settings);
             }
             if menu_row(ui, "设置", icons::gear) {
-                model.settings = settings::SettingsState::load();
+                model.settings.prefs = model.runtime.clone();
+                model.settings.connection = model.runtime_connection.clone();
+
                 model.modal = Some(Modal::Settings);
             }
             ui.add_space(6.0);
@@ -201,7 +217,7 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                 let w = ui.available_width();
                 egui::Frame::none()
                     .fill(t::WHITE)
-                    .stroke(Stroke::new(1.0, t::BORDER))
+                    .stroke(Stroke::new(1.0_f32, t::BORDER))
                     .rounding(Rounding::same(9.0))
                     .inner_margin(egui::Margin::symmetric(9.0, 5.0))
                     .show(ui, |ui| {
@@ -237,7 +253,7 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                         for idx in idxs {
                             let s = &sessions[idx];
                             let selected = s.sid == model.active_sid;
-                            session_row(ui, s, selected, &mut clicks);
+                            session_row(ui, s, selected, &mut clicks, &mut edits, &mut exports);
                         }
                     }
                     if sessions.is_empty() {
@@ -247,10 +263,8 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                 });
 
             // 底部用户行(手动绘制:头像与文字在分割线与底边之间垂直居中)
-            let (rect, _) = ui.allocate_exact_size(
-                Vec2::new(ui.available_width(), user_h),
-                Sense::hover(),
-            );
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), user_h), Sense::hover());
             let p = ui.painter_at(rect);
             let sep_y = rect.top() + 1.0;
             p.line_segment(
@@ -258,7 +272,7 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                     Pos2::new(rect.left(), sep_y),
                     Pos2::new(rect.right(), sep_y),
                 ],
-                Stroke::new(1.0, t::BORDER),
+                Stroke::new(1.0_f32, t::BORDER),
             );
             // 可用区域:分割线 → 底边,取中点
             let cy = (sep_y + rect.bottom()) * 0.5;
@@ -285,5 +299,16 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
 
     for sid in clicks {
         model.switch_session(&sid);
+    }
+    for sid in exports {
+        ctx.output_mut(|o| o.copied_text = model.export_markdown(&sid));
+    }
+    if !edits.is_empty() {
+        for (sid, title) in edits {
+            if let Some(s) = model.sessions.iter_mut().find(|s| s.sid == sid) {
+                s.title = title;
+            }
+        }
+        model.save_history();
     }
 }
