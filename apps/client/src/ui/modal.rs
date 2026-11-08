@@ -147,14 +147,6 @@ fn settings_window(ctx: &egui::Context, model: &mut Model) {
                                 });
                             }
                             ui.add_space(16.0);
-                            ui.collapsing("使用 API Key", |ui| {
-                                field(ui, "API Key", &mut s.key_input, true, "sk-…");
-                                ui.add_enabled_ui(!s.busy, |ui| {
-                                    if ui.button("连接").clicked() {
-                                        s.save();
-                                    }
-                                });
-                            });
                             ui.collapsing("服务地址", |ui| {
                                 ui.add_enabled_ui(!s.busy, |ui| {
                                     field(

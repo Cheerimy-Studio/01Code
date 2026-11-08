@@ -31,7 +31,7 @@ fn entry(base: &str) -> Result<keyring::Entry, String> {
 pub fn key(base: &str) -> Result<String, String> {
     entry(base)?
         .get_password()
-        .map_err(|_| "请先登录或填写 API Key".into())
+        .map_err(|_| "请先登录言灵中转".into())
 }
 pub fn save_key(base: &str, key: &str) -> Result<(), String> {
     entry(base)?
@@ -72,19 +72,32 @@ pub fn revoke(base: &str, key: &str) -> Result<(), String> {
     forget(base)
 }
 pub fn begin(base: &str) -> Result<Value, String> {
-    http()?
+    let resp = http()?
         .post(format!("{base}/api/device/code"))
         .json(&json!({"client_id":"01code","scope":"llm"}))
         .send()
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json()
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("无法连接授权服务:{e}"))?;
+    let status = resp.status();
+    let v: Value = resp.json().unwrap_or(Value::Null);
+    if status.is_success() {
+        return Ok(v);
+    }
+    let err = v["error"].as_str().unwrap_or("invalid_request");
+    Err(match err {
+        "invalid_request" => "网关未启用设备登录(需 1.7.61+ 且配置 HTTPS 与可信代理)".into(),
+        "invalid_client" => "客户端标识被网关拒绝".into(),
+        "invalid_scope" => "授权范围不被支持".into(),
+        "slow_down" => "请求过于频繁，请稍后再试".into(),
+        other => format!("设备授权失败:{other}"),
+    })
 }
 pub fn poll(base: &str, code: &str) -> Result<Value, String> {
     let r=http()?.post(format!("{base}/api/device/token")).json(&json!({"grant_type":"urn:ietf:params:oauth:grant-type:device_code","device_code":code,"client_id":"01code"})).send().map_err(|e|e.to_string())?;
     let status = r.status();
+    // 限速时按协议视为 slow_down,由调用方退避重试
+    if status.as_u16() == 429 {
+        return Ok(json!({"error":"slow_down"}));
+    }
     let v: Value = r.json().map_err(|e| e.to_string())?;
     if status.is_success() || status == 400 {
         Ok(v)
@@ -109,5 +122,67 @@ mod tests {
         ] {
             assert!(base(v).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+    use std::io::Read;
+    use tiny_http::{Response, Server, StatusCode};
+
+    #[test]
+    fn device_poll_handles_protocol_states() {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let handle = std::thread::spawn(move || {
+            for _ in 0..5 {
+                let mut req = server.recv().unwrap();
+                let mut body = String::new();
+                req.as_reader().read_to_string(&mut body).unwrap();
+                let v: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                let dc = v["device_code"].as_str().unwrap_or("").to_string();
+                let (code, payload) = match dc.as_str() {
+                    "pending" => (400, json!({"error":"authorization_pending"})),
+                    "slow" => (400, json!({"error":"slow_down"})),
+                    "denied" => (400, json!({"error":"access_denied"})),
+                    "token" => (200, json!({"access_token":"sk-usr-test","token_type":"Bearer","expires_in":0,"scope":"llm"})),
+                    _ => (429, json!({"error":"rate_limited"})),
+                };
+                let header = tiny_http::Header::from_bytes(
+                    &b"Content-Type"[..],
+                    &b"application/json"[..],
+                )
+                .unwrap();
+                let _ = req.respond(
+                    Response::from_string(payload.to_string())
+                        .with_status_code(StatusCode(code))
+                        .with_header(header),
+                );
+            }
+        });
+        assert_eq!(poll(&base, "pending").unwrap()["error"], "authorization_pending");
+        assert_eq!(poll(&base, "slow").unwrap()["error"], "slow_down");
+        assert_eq!(poll(&base, "denied").unwrap()["error"], "access_denied");
+        assert_eq!(poll(&base, "token").unwrap()["access_token"], "sk-usr-test");
+        assert_eq!(poll(&base, "any").unwrap()["error"], "slow_down");
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn device_begin_maps_invalid_request() {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let req = server.recv().unwrap();
+            let _ = req.respond(
+                Response::from_string("{\"error\":\"invalid_request\"}")
+                    .with_status_code(StatusCode(400)),
+            );
+        });
+        let err = begin(&format!("http://127.0.0.1:{port}")).unwrap_err();
+        assert!(err.contains("设备登录"));
+        handle.join().unwrap();
     }
 }

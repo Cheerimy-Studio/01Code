@@ -19,7 +19,6 @@ pub struct SettingsState {
     pub nullclaw: Option<String>,
     pub base_url: String,
     pub model: String,
-    pub key_input: String,
     pub key_configured: bool,
     pub status: String,
     pub tab: usize,
@@ -44,13 +43,17 @@ impl SettingsState {
     pub fn load() -> Self {
         let v = config::read();
         let (tx, rx) = mpsc::channel();
-        let base = v["base_url"].as_str().unwrap_or(DEFAULT_BASE_URL).into();
+        let base: String = v["base_url"].as_str().unwrap_or(DEFAULT_BASE_URL).into();
+        // 仅网页登录:配置标记已绑定但系统凭据缺失时,回到未登录状态
+        let mut key_configured = v["bound"].as_bool().unwrap_or(false);
+        if key_configured {
+            key_configured = gateway::base(&base).is_ok_and(|b| gateway::key(&b).is_ok());
+        }
         Self {
             nullclaw: runtime::installed(),
             base_url: base,
             model: v["model"].as_str().unwrap_or(DEFAULT_MODEL).into(),
-            key_input: String::new(),
-            key_configured: v["bound"].as_bool().unwrap_or(false),
+            key_configured,
             status: String::new(),
             tab: 0,
             models: Vec::new(),
@@ -105,6 +108,9 @@ impl SettingsState {
                 ResultMsg::Status(r) => {
                     self.busy = false;
                     self.nullclaw = runtime::installed();
+                    // 设备登录流程结束(成功或失败)都清理一次性验证码状态
+                    self.device_code.clear();
+                    self.verification_uri.clear();
                     if r.as_ref().is_err_and(|e| e.contains("登录已失效")) {
                         self.key_configured = false;
                         self.account = Value::Null;
@@ -136,7 +142,6 @@ impl SettingsState {
                 ResultMsg::Bound => {
                     self.busy = false;
                     self.key_configured = true;
-                    self.key_input.clear();
                     self.device_code.clear();
                     self.verification_uri.clear();
                     self.status = "已绑定言灵中转".into();
@@ -199,6 +204,7 @@ impl SettingsState {
                 let started = std::time::Instant::now();
                 let mut interval = v["interval"].as_u64().unwrap_or(5).clamp(5, 60);
                 let ttl = v["expires_in"].as_u64().unwrap_or(600).min(600);
+                let mut transient = 0u32;
                 loop {
                     for _ in 0..interval * 5 {
                         if cancel.load(Ordering::Relaxed) {
@@ -209,7 +215,20 @@ impl SettingsState {
                     if started.elapsed().as_secs() >= ttl {
                         return Err("验证码已过期，请重新登录".into());
                     }
-                    let result = gateway::poll(&b, dc)?;
+                    let result = match gateway::poll(&b, dc) {
+                        Ok(v) => {
+                            transient = 0;
+                            v
+                        }
+                        Err(e) => {
+                            // 瞬时网络错误重试三次,避免一次抖动中断登录
+                            transient += 1;
+                            if transient >= 3 {
+                                return Err(e);
+                            }
+                            continue;
+                        }
+                    };
                     if let Some(k) = result["access_token"].as_str() {
                         if cancel.load(Ordering::Relaxed) {
                             let _ = gateway::revoke(&b, k);
@@ -292,21 +311,10 @@ impl SettingsState {
         self.busy = true;
         let tx = self.tx.clone();
         let model = self.model.clone();
-        let key = std::mem::take(&mut self.key_input);
         let workspace_only = self.workspace_only;
         std::thread::spawn(move || {
             let r = (|| {
-                let k = if key.trim().is_empty() {
-                    gateway::key(&b)?
-                } else {
-                    let k = key.trim().to_string();
-                    gateway::get(&b, &k, "/v1/models")?;
-                    gateway::save_key(&b, &k)?;
-                    let mut cfg = config::read();
-                    cfg["auth_mode"] = json!("manual");
-                    config::write(&cfg)?;
-                    k
-                };
+                let k = gateway::key(&b)?;
                 persist(&b, &model)?;
                 let mut cfg = config::read();
                 cfg["workspace_only"] = json!(workspace_only);
