@@ -97,6 +97,21 @@ pub fn begin(base: &str) -> Result<Value, String> {
             }
         };
         let status = resp.status();
+        if status.as_u16() == 429 {
+            if attempt < 2 {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                continue;
+            }
+            return Err("请求过于频繁，请稍后再试".into());
+        }
+        if status.is_server_error() {
+            last = format!("HTTP {}", status.as_u16());
+            if attempt < 2 {
+                std::thread::sleep(std::time::Duration::from_secs(1 + attempt as u64));
+                continue;
+            }
+            return Err("网关暂时不可用，请稍后重试".into());
+        }
         let v: Value = resp.json().unwrap_or(Value::Null);
         if status.is_success() {
             return Ok(v);
