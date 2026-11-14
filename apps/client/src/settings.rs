@@ -58,7 +58,10 @@ fn parse_models(data: &[Value]) -> (Vec<String>, HashMap<String, ModelMeta>) {
         meta.insert(
             id.to_string(),
             ModelMeta {
-                ctx: m["context_length"].as_u64().unwrap_or(0),
+                ctx: m["context_length"]
+                    .as_u64()
+                    .or_else(|| m["context_window"].as_u64())
+                    .unwrap_or(0),
                 out: m["max_output_tokens"].as_u64().unwrap_or(0),
                 tps: m["tps"].as_u64().unwrap_or(0),
             },
@@ -459,11 +462,11 @@ mod tests {
     fn parses_model_metadata_and_tolerates_missing_fields() {
         let data = vec![
             json!({"id":"a","context_length":128000,"max_output_tokens":4096,"tps":55}),
-            json!({"id":"b"}),
+            json!({"id":"b","context_window":64000}),
         ];
         let (models, meta) = parse_models(&data);
         assert_eq!(models, vec!["a".to_string(), "b".to_string()]);
         assert_eq!(meta["a"], ModelMeta { ctx: 128000, out: 4096, tps: 55 });
-        assert_eq!(meta["b"], ModelMeta::default());
+        assert_eq!(meta["b"].ctx, 64000, "兼容 context_window");
     }
 }
