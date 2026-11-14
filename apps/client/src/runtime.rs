@@ -434,7 +434,7 @@ pub fn configure(base: &str, model: &str, workspace_only: bool) -> Result<(), St
         .unwrap()
         .retain(|k, _| !k.starts_with("custom:http://127.0.0.1:"));
     v["models"]["providers"][&provider] =
-        json!({"base_url":base,"native_tools":true,"user_agent":"01Code/0.2.1"});
+        json!({"base_url":base,"native_tools":true,"user_agent":"01Code/0.2.2"});
     if !v["agents"].is_object() {
         v["agents"] = json!({});
     }

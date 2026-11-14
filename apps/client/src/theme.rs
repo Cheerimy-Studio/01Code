@@ -18,12 +18,12 @@ pub const MUTED: Color32 = Color32::from_rgb(0x64, 0x74, 0x8B);
 pub const FAINT: Color32 = Color32::from_rgb(0x94, 0xA3, 0xB8);
 
 /// 天蓝 = 主色 / 交互 / 进行中
-pub const SKY: Color32 = Color32::from_rgb(0x0E, 0xA5, 0xE9);
-pub const SKY_DEEP: Color32 = Color32::from_rgb(0x02, 0x84, 0xC7);
-pub const SKY_CHIP_BG: Color32 = Color32::from_rgb(0xF0, 0xF9, 0xFF);
-pub const SKY_CHIP_BR: Color32 = Color32::from_rgb(0xBA, 0xE6, 0xFD);
-pub const SKY_CHIP_TX: Color32 = Color32::from_rgb(0x03, 0x69, 0xA1);
-pub const SKY_BUBBLE_TX: Color32 = Color32::from_rgb(0x0C, 0x4A, 0x6E);
+pub const SKY: Color32 = Color32::from_rgb(0x31, 0x5F, 0xE9);
+pub const SKY_DEEP: Color32 = Color32::from_rgb(0x24, 0x4C, 0xD0);
+pub const SKY_CHIP_BG: Color32 = Color32::from_rgb(0xEE, 0xF3, 0xFF);
+pub const SKY_CHIP_BR: Color32 = Color32::from_rgb(0xC7, 0xD7, 0xFE);
+pub const SKY_CHIP_TX: Color32 = Color32::from_rgb(0x24, 0x47, 0xA8);
+pub const SKY_BUBBLE_TX: Color32 = Color32::from_rgb(0x1E, 0x3A, 0x8A);
 
 /// 浅绿 = 强调 / 成功 / 产物
 pub const GRN: Color32 = Color32::from_rgb(0x10, 0xB9, 0x81);
@@ -41,7 +41,7 @@ pub const HOVER: Color32 = Color32::from_rgb(0xF5, 0xF7, 0xFA);
 pub const SELECTED: Color32 = Color32::from_rgb(0xEE, 0xF2, 0xF7);
 
 /// 用户气泡
-pub const BUBBLE_BG: Color32 = Color32::from_rgb(0xEA, 0xF2, 0xFE);
+pub const BUBBLE_BG: Color32 = Color32::from_rgb(0xE8, 0xEF, 0xFE);
 
 /// 文本选中背景(校准蓝色,正文保持黑色可读)
 pub const SELECTION_BG: Color32 = Color32::from_rgb(0xBF, 0xDB, 0xFE);

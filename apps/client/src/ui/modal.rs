@@ -1,5 +1,6 @@
 use crate::{
     model::{Modal, Model},
+    settings::DEFAULT_BASE_URL,
     theme as t,
 };
 use eframe::egui::{self, Align2, RichText, Stroke, Vec2};
@@ -106,12 +107,26 @@ fn settings_window(ctx: &egui::Context, model: &mut Model) {
                                 "连接言灵中转"
                             });
                             ui.add_space(12.0);
+                            ui.label(
+                                RichText::new(if s.key_configured {
+                                    "已连接言灵中转，模型列表与上下文会自动同步"
+                                } else {
+                                    "使用浏览器确认设备码即可登录，无需手动填写 Key"
+                                })
+                                .size(12.0)
+                                .color(t::MUTED),
+                            );
                             if let Some(name) = s.account["username"].as_str() {
-                                ui.label(name);
-                                ui.label(format!(
-                                    "余额  ¥{:.4}",
-                                    s.account["balance"].as_f64().unwrap_or(0.0)
-                                ));
+                                ui.add_space(6.0);
+                                ui.label(RichText::new(name).size(15.0).strong());
+                                ui.label(
+                                    RichText::new(format!(
+                                        "余额  ¥{:.4}",
+                                        s.account["balance"].as_f64().unwrap_or(0.0)
+                                    ))
+                                    .size(12.5)
+                                    .color(t::MUTED),
+                                );
                             }
                             ui.add_enabled_ui(!s.busy, |ui| {
                                 if ui
@@ -134,30 +149,60 @@ fn settings_window(ctx: &egui::Context, model: &mut Model) {
                                 }
                             });
                             if !s.device_code.is_empty() {
-                                ui.add_space(12.0);
-                                ui.label("确认浏览器中的验证码");
-                                ui.label(RichText::new(&s.device_code).size(24.0).monospace());
-                                ui.horizontal(|ui| {
-                                    if ui.button("打开授权页").clicked() {
-                                        let _ = open::that(&s.verification_uri);
-                                    }
-                                    if ui.button("取消").clicked() {
-                                        s.cancel_login();
-                                    }
-                                });
+                                ui.add_space(14.0);
+                                egui::Frame::none()
+                                    .fill(t::PANEL)
+                                    .stroke(Stroke::new(1.0_f32, t::BORDER))
+                                    .rounding(10.0)
+                                    .inner_margin(egui::Margin::symmetric(14.0, 12.0))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.label(RichText::new("在浏览器中确认验证码").size(11.5).color(t::FAINT));
+                                        ui.add_space(2.0);
+                                        ui.label(
+                                            RichText::new(&s.device_code)
+                                                .size(26.0)
+                                                .monospace()
+                                                .strong()
+                                                .color(t::TEXT),
+                                        );
+                                        ui.add_space(6.0);
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 10.0;
+                                            if ui.button("打开授权页").clicked() {
+                                                let _ = open::that(&s.verification_uri);
+                                            }
+                                            if ui.button("取消登录").clicked() {
+                                                s.cancel_login();
+                                            }
+                                        });
+                                    });
                             }
                             ui.add_space(16.0);
-                            ui.collapsing("服务地址", |ui| {
-                                ui.add_enabled_ui(!s.busy, |ui| {
-                                    field(
-                                        ui,
-                                        "API 地址",
-                                        &mut s.base_url,
-                                        false,
-                                        "https://ai.gzmath.cn/v1",
+                            egui::Frame::none()
+                                .fill(t::PANEL)
+                                .stroke(Stroke::new(1.0_f32, t::BORDER))
+                                .rounding(10.0)
+                                .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new("服务地址").size(11.5).color(t::FAINT));
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            ui.label(
+                                                RichText::new(DEFAULT_BASE_URL)
+                                                    .monospace()
+                                                    .size(12.0)
+                                                    .color(t::TEXT2),
+                                            );
+                                        });
+                                    });
+                                    ui.label(
+                                        RichText::new("已固定为言灵中转，无需手动配置")
+                                            .size(11.0)
+                                            .color(t::FAINT),
                                     );
                                 });
-                            });
                             if s.key_configured {
                                 ui.add_space(12.0);
                                 ui.add_enabled_ui(!s.busy, |ui| {
@@ -230,6 +275,31 @@ fn settings_window(ctx: &egui::Context, model: &mut Model) {
                                                 });
                                         }
                                     });
+                                let meta = s.model_meta.get(&s.model).cloned();
+                                if let Some(meta) = meta {
+                                    let mut parts = Vec::new();
+                                    if meta.ctx > 0 {
+                                        parts.push(format!("上下文 {}", meta.ctx));
+                                    }
+                                    if meta.out > 0 {
+                                        parts.push(format!("输出上限 {}", meta.out));
+                                    }
+                                    if meta.tps > 0 {
+                                        parts.push(format!("约 {} tok/s", meta.tps));
+                                    }
+                                    if !parts.is_empty() {
+                                        ui.label(
+                                            RichText::new(parts.join(" · "))
+                                                .size(11.5)
+                                                .color(t::FAINT),
+                                        );
+                                    }
+                                }
+                                ui.label(
+                                    RichText::new("列表每 60 秒自动同步；模型下线会自动切换")
+                                        .size(11.0)
+                                        .color(t::FAINT),
+                                );
                                 ui.add_space(14.0);
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 12.0;

@@ -195,6 +195,8 @@ impl eframe::App for App {
         if std::mem::take(&mut self.model.settings.reconnect) {
             self.model.request_reconnect = true;
             self.model.model_name = self.model.settings.model.clone();
+            // 切换模型时先按网关同步的元数据重置上下文上限；运行时随后会再校准
+            self.model.ctx_limit = self.model.settings.context_limit(&self.model.model_name);
         }
         // 首帧硬同步窗口物理尺寸 = 画布逻辑 × ppp(修复创建期 DPI 感知切换错位)
         if !self.resized {

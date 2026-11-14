@@ -1,8 +1,10 @@
 use serde_json::{json, Value};
-pub const CLIENT: &str = "01Code/0.2.1";
+pub const CLIENT: &str = "01Code/0.2.2";
 pub fn http() -> Result<reqwest::blocking::Client, String> {
+    // 慢网络/移动网络下 30s 容易在首包前超时；连接与总超时分开设置
     reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(60))
         .user_agent(CLIENT)
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -77,24 +79,38 @@ pub fn revoke(base: &str, key: &str) -> Result<(), String> {
     forget(base)
 }
 pub fn begin(base: &str) -> Result<Value, String> {
-    let resp = http()?
-        .post(format!("{base}/api/device/code"))
-        .json(&json!({"client_id":"01code","scope":"llm"}))
-        .send()
-        .map_err(|e| format!("无法连接授权服务:{e}"))?;
-    let status = resp.status();
-    let v: Value = resp.json().unwrap_or(Value::Null);
-    if status.is_success() {
-        return Ok(v);
+    // 网络抖动时重试 3 次（1s/2s 退避）；HTTP 4xx 不重试，直接给出可读原因
+    let mut last = String::new();
+    for attempt in 0..3 {
+        let resp = match http()?
+            .post(format!("{base}/api/device/code"))
+            .json(&json!({"client_id":"01code","scope":"llm"}))
+            .send()
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                last = e.to_string();
+                if attempt < 2 {
+                    std::thread::sleep(std::time::Duration::from_secs(1 + attempt as u64));
+                }
+                continue;
+            }
+        };
+        let status = resp.status();
+        let v: Value = resp.json().unwrap_or(Value::Null);
+        if status.is_success() {
+            return Ok(v);
+        }
+        let err = v["error"].as_str().unwrap_or("invalid_request");
+        return Err(match err {
+            "invalid_request" => "网关未启用设备登录（请在后台「01Code 设备登录」填写公网入口与可信代理）".into(),
+            "invalid_client" => "客户端标识被网关拒绝".into(),
+            "invalid_scope" => "授权范围不被支持".into(),
+            "slow_down" => "请求过于频繁，请稍后再试".into(),
+            other => format!("设备授权失败:{other}"),
+        });
     }
-    let err = v["error"].as_str().unwrap_or("invalid_request");
-    Err(match err {
-        "invalid_request" => "网关未启用设备登录（请在后台「01Code 设备登录」填写公网入口与可信代理）".into(),
-        "invalid_client" => "客户端标识被网关拒绝".into(),
-        "invalid_scope" => "授权范围不被支持".into(),
-        "slow_down" => "请求过于频繁，请稍后再试".into(),
-        other => format!("设备授权失败:{other}"),
-    })
+    Err(format!("无法连接授权服务（已自动重试，请检查网络后重试）:{last}"))
 }
 pub fn poll(base: &str, code: &str) -> Result<Value, String> {
     let r=http()?.post(format!("{base}/api/device/token")).json(&json!({"grant_type":"urn:ietf:params:oauth:grant-type:device_code","device_code":code,"client_id":"01code"})).send().map_err(|e|e.to_string())?;
@@ -118,6 +134,10 @@ mod tests {
         assert_eq!(
             base("https://example.org/v1/").unwrap(),
             "https://example.org"
+        );
+        assert_eq!(
+            base(crate::settings::DEFAULT_BASE_URL).unwrap(),
+            "https://ai.gzmath.cn"
         );
         // 本地联调：仅回环地址允许 HTTP
         assert_eq!(

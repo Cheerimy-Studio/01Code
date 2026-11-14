@@ -838,14 +838,24 @@ fn status_bar(ui: &mut egui::Ui, model: &Model) {
     if steps == 0 {
         return;
     }
-    let pct = (model.ctx_used / model.ctx_limit.max(1.0) * 100.0) as u32;
+    // 网关同步的上下文上限优先；运行时上报的 CtxUsage 会覆盖它
+    let synced = model.settings.context_limit(&model.model_name);
+    let limit = if model.ctx_limit > 0.0 {
+        model.ctx_limit
+    } else if synced > 0.0 {
+        synced
+    } else {
+        200_000.0
+    };
+    let pct = (model.ctx_used / limit.max(1.0) * 100.0) as u32;
     ui.add_space(6.0);
     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
         ui.label(
             RichText::new(format!(
-                "{} 步 · 上下文 {}k({}%)",
+                "{} 步 · 上下文 {}k / {}k({}%)",
                 steps,
                 (model.ctx_used / 1000.0) as u32,
+                (limit / 1000.0) as u32,
                 pct
             ))
             .size(11.5)

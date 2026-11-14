@@ -136,6 +136,8 @@ impl Model {
         } else {
             settings.model.clone()
         };
+        // 优先用网关同步的上下文上限；尚未同步时由聊天页回退到 200k
+        let ctx_limit = settings.context_limit(&model_name);
         let mut m = Self {
             history_dirty: false,
             sessions: Vec::new(),
@@ -143,7 +145,7 @@ impl Model {
             transcripts: HashMap::new(),
             todo: Vec::new(),
             ctx_used: 0.0,
-            ctx_limit: 200_000.0,
+            ctx_limit,
             model_name,
             input: String::new(),
             search: String::new(),

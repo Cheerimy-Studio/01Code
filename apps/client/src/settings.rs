@@ -1,5 +1,6 @@
 use crate::{config, gateway, runtime};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, Sender},
@@ -7,12 +8,18 @@ use std::sync::{
 };
 pub const DEFAULT_BASE_URL: &str = "https://ai.gzmath.cn/v1";
 pub const DEFAULT_MODEL: &str = "deepseek-v4-pro";
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModelMeta {
+    pub ctx: u64,
+    pub out: u64,
+    pub tps: u64,
+}
 pub enum ResultMsg {
     LoggedOut,
     Status(Result<String, String>),
     Code { code: String, url: String },
     Bound,
-    Snapshot(Value, Vec<String>, Value),
+    Snapshot(Value, Vec<String>, Value, HashMap<String, ModelMeta>),
     Output(String, Result<String, String>),
 }
 pub struct SettingsState {
@@ -23,6 +30,7 @@ pub struct SettingsState {
     pub status: String,
     pub tab: usize,
     pub models: Vec<String>,
+    pub model_meta: HashMap<String, ModelMeta>,
     pub account: Value,
     pub usage: Value,
     pub device_code: String,
@@ -39,11 +47,31 @@ pub struct SettingsState {
     cancel: Arc<AtomicBool>,
     last_sync: std::time::Instant,
 }
+/// 解析 /v1/models：只依赖 id；上下文/输出/速度缺失时按 0 处理，
+/// 兼容旧网关或第三方 OpenAI 兼容服务。
+fn parse_models(data: &[Value]) -> (Vec<String>, HashMap<String, ModelMeta>) {
+    let mut models = Vec::with_capacity(data.len());
+    let mut meta = HashMap::new();
+    for m in data {
+        let Some(id) = m["id"].as_str() else { continue };
+        models.push(id.to_string());
+        meta.insert(
+            id.to_string(),
+            ModelMeta {
+                ctx: m["context_length"].as_u64().unwrap_or(0),
+                out: m["max_output_tokens"].as_u64().unwrap_or(0),
+                tps: m["tps"].as_u64().unwrap_or(0),
+            },
+        );
+    }
+    (models, meta)
+}
 impl SettingsState {
     pub fn load() -> Self {
         let v = config::read();
         let (tx, rx) = mpsc::channel();
-        let base: String = v["base_url"].as_str().unwrap_or(DEFAULT_BASE_URL).into();
+        // 客户端只服务言灵中转：网关地址固定，不再允许用户改到其他地址
+        let base = DEFAULT_BASE_URL.to_string();
         // 仅网页登录:配置标记已绑定但系统凭据缺失时,回到未登录状态
         let mut key_configured = v["bound"].as_bool().unwrap_or(false);
         if key_configured {
@@ -57,6 +85,7 @@ impl SettingsState {
             status: String::new(),
             tab: 0,
             models: Vec::new(),
+            model_meta: HashMap::new(),
             account: Value::Null,
             usage: Value::Null,
             device_code: String::new(),
@@ -73,6 +102,14 @@ impl SettingsState {
             cancel: Arc::new(AtomicBool::new(false)),
             last_sync: std::time::Instant::now(),
         }
+    }
+    /// 当前模型在网关侧标注的上下文上限（0=未标注）。
+    pub fn context_limit(&self, model: &str) -> f32 {
+        self.model_meta
+            .get(model)
+            .map(|m| m.ctx as f32)
+            .filter(|v| *v > 0.0)
+            .unwrap_or(0.0)
     }
     pub fn bootstrap(&mut self) {
         self.busy = true;
@@ -148,12 +185,23 @@ impl SettingsState {
                     self.reconnect = true;
                     self.sync();
                 }
-                ResultMsg::Snapshot(me, models, usage) => {
+                ResultMsg::Snapshot(me, models, usage, meta) => {
                     self.busy = false;
                     self.account = me;
                     self.models = models;
+                    self.model_meta = meta;
                     self.usage = usage;
                     self.status = "已同步".into();
+                    if self.models.is_empty() {
+                        self.status = "网关暂无可用模型，请联系管理员接入".into();
+                    }
+                    // 模型被管理员下线/改名：自动切到第一个可用模型并应用
+                    if !self.models.is_empty() && !self.models.iter().any(|m| m == &self.model) {
+                        let old = self.model.clone();
+                        self.model = self.models[0].clone();
+                        self.status = format!("模型 {old} 已不可用，已切换到 {}", self.model);
+                        self.save();
+                    }
                 }
                 ResultMsg::Output(title, r) => {
                     self.busy = false;
@@ -222,11 +270,14 @@ impl SettingsState {
                             v
                         }
                         Err(e) => {
-                            // 瞬时网络错误重试三次,避免一次抖动中断登录
+                            // 慢网络/抖动：最多重试 6 次并逐步退避，避免一次超时中断登录
                             transient += 1;
-                            if transient >= 3 {
-                                return Err(e);
+                            if transient >= 6 {
+                                return Err(format!("网络不稳定，登录未完成：{e}"));
                             }
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                500 * transient as u64,
+                            ));
                             continue;
                         }
                     };
@@ -279,17 +330,16 @@ impl SettingsState {
                 let b = gateway::base(&base)?;
                 let k = gateway::key(&b)?;
                 let me = gateway::get(&b, &k, "/v1/me").unwrap_or(Value::Null);
-                let models = gateway::get(&b, &k, "/v1/models")?["data"]
+                let data = gateway::get(&b, &k, "/v1/models")?["data"]
                     .as_array()
                     .ok_or("模型列表格式无效")?
-                    .iter()
-                    .filter_map(|m| m["id"].as_str().map(String::from))
-                    .collect();
+                    .clone();
+                let (models, meta) = parse_models(&data);
                 let usage = gateway::get(&b, &k, "/v1/usage?days=7").unwrap_or(Value::Null);
-                Ok((me, models, usage))
+                Ok((me, models, usage, meta))
             })();
             let _ = tx.send(match r {
-                Ok((me, models, usage)) => ResultMsg::Snapshot(me, models, usage),
+                Ok((me, models, usage, meta)) => ResultMsg::Snapshot(me, models, usage, meta),
                 Err(e) => ResultMsg::Status(Err(e)),
             });
         });
@@ -400,4 +450,20 @@ fn persist(b: &str, model: &str) -> Result<(), String> {
     v["model"] = json!(model);
     v["bound"] = json!(true);
     config::write(&v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn parses_model_metadata_and_tolerates_missing_fields() {
+        let data = vec![
+            json!({"id":"a","context_length":128000,"max_output_tokens":4096,"tps":55}),
+            json!({"id":"b"}),
+        ];
+        let (models, meta) = parse_models(&data);
+        assert_eq!(models, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(meta["a"], ModelMeta { ctx: 128000, out: 4096, tps: 55 });
+        assert_eq!(meta["b"], ModelMeta::default());
+    }
 }
