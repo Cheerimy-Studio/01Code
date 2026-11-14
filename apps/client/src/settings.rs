@@ -193,7 +193,8 @@ impl SettingsState {
                     .to_string();
                 let parsed = reqwest::Url::parse(&url).map_err(|_| "授权地址无效")?;
                 let expected = reqwest::Url::parse(&b).map_err(|_| "地址无效")?;
-                if parsed.origin() != expected.origin() || parsed.scheme() != "https" {
+                // 授权页必须与网关同源同协议（生产 https；本地回环允许 http）
+                if parsed.origin() != expected.origin() || parsed.scheme() != expected.scheme() {
                     return Err("授权地址与网关不一致".into());
                 }
                 let _ = tx.send(ResultMsg::Code {

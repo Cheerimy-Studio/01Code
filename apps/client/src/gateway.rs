@@ -9,15 +9,20 @@ pub fn http() -> Result<reqwest::blocking::Client, String> {
         .map_err(|e| e.to_string())
 }
 pub fn base(input: &str) -> Result<String, String> {
-    let u = reqwest::Url::parse(input.trim()).map_err(|_| "请输入有效的 HTTPS 地址")?;
-    if u.scheme() != "https"
+    let u = reqwest::Url::parse(input.trim()).map_err(|_| "请输入有效的网关地址")?;
+    let host = u.host_str().unwrap_or("");
+    let loopback = host == "localhost"
+        || host == "::1"
+        || host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false);
+    // 生产必须 HTTPS；本机回环允许 HTTP，便于与本地网关联调
+    if (u.scheme() != "https" && !(u.scheme() == "http" && loopback))
         || u.host_str().is_none()
         || !u.username().is_empty()
         || u.password().is_some()
         || u.query().is_some()
         || u.fragment().is_some()
     {
-        return Err("请使用 HTTPS 地址".into());
+        return Err("请使用 HTTPS 地址（本地联调可用 http://127.0.0.1:端口）".into());
     }
     Ok(input
         .trim()
@@ -84,7 +89,7 @@ pub fn begin(base: &str) -> Result<Value, String> {
     }
     let err = v["error"].as_str().unwrap_or("invalid_request");
     Err(match err {
-        "invalid_request" => "网关未启用设备登录(需 1.7.61+ 且配置 HTTPS 与可信代理)".into(),
+        "invalid_request" => "网关未启用设备登录（请在后台「01Code 设备登录」填写公网入口与可信代理）".into(),
         "invalid_client" => "客户端标识被网关拒绝".into(),
         "invalid_scope" => "授权范围不被支持".into(),
         "slow_down" => "请求过于频繁，请稍后再试".into(),
@@ -114,8 +119,18 @@ mod tests {
             base("https://example.org/v1/").unwrap(),
             "https://example.org"
         );
+        // 本地联调：仅回环地址允许 HTTP
+        assert_eq!(
+            base("http://127.0.0.1:8100/v1/").unwrap(),
+            "http://127.0.0.1:8100"
+        );
+        assert_eq!(
+            base("http://localhost:8100").unwrap(),
+            "http://localhost:8100"
+        );
         for v in [
             "http://example.org",
+            "http://192.168.1.10:8100",
             "https://user:pw@example.org",
             "https://example.org/?key=x",
             "https://example.org/#x",
