@@ -1,7 +1,7 @@
 //! 01 Logo 原生矢量绘制 — 无图片资源,与 logo/*.svg 同构
 //! (0=天蓝圆环 Agent 循环;1=浅绿旗形笔画执行;无终端下划线)
 
-use eframe::egui::{self, Color32, Painter, Pos2, Rect, Rounding, Shape, Stroke, Ui, Vec2};
+use eframe::egui::{self, Color32, Painter, Pos2, Rect, Rounding, Shape, Stroke};
 
 use crate::theme;
 
@@ -41,12 +41,6 @@ pub fn glyphs(p: &Painter, rect: Rect, sky: Color32, grn: Color32) {
     p.add(Shape::line_segment([a, b], Stroke::new(w, grn)));
     p.add(Shape::circle_filled(a, w * 0.5, grn));
     p.add(Shape::circle_filled(b, w * 0.5, grn));
-}
-
-/// 标题栏/侧栏小图标:圆角底 + 品牌字形
-pub fn tile(ui: &mut Ui, size: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
-    paint_tile(ui.painter(), rect);
 }
 
 pub fn paint_tile(p: &egui::Painter, rect: Rect) {

@@ -26,6 +26,62 @@ pub fn installed() -> Option<String> {
     p.is_file().then(|| p.to_string_lossy().into_owned())
 }
 
+/// 结束由本客户端托管、但父进程已退出的 NullClaw 残留进程。
+/// 只匹配受管 bin 路径，避免影响用户自行安装的运行时。
+#[cfg(windows)]
+fn kill_stale_runtime() {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, TerminateProcess,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    };
+    let target = bin();
+    let target = std::fs::canonicalize(&target).unwrap_or(target);
+    let target = target.to_string_lossy().to_lowercase();
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut ok = Process32FirstW(snap, &mut entry);
+        while ok != 0 {
+            let pid = entry.th32ProcessID;
+            if pid > 4 && pid != std::process::id() {
+                let h = OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+                    0,
+                    pid,
+                );
+                if h != 0 {
+                    let mut buf = [0u16; 1024];
+                    let mut len = buf.len() as u32;
+                    if QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len) != 0 {
+                        let path = String::from_utf16_lossy(&buf[..len as usize]);
+                        let path = std::fs::canonicalize(&path)
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or(path);
+                        if path.to_lowercase() == target {
+                            TerminateProcess(h, 1);
+                        }
+                    }
+                    CloseHandle(h);
+                }
+            }
+            ok = Process32NextW(snap, &mut entry);
+        }
+        CloseHandle(snap);
+    }
+}
+
+#[cfg(not(windows))]
+fn kill_stale_runtime() {}
+
 /// 安装日志文件(独立于运行时日志,便于排查下载/校验问题)
 pub fn install_log_path() -> PathBuf {
     crate::config::data_dir().join("runtime-install.log")
@@ -82,7 +138,9 @@ fn mirror_urls(url: &str) -> Vec<String> {
 
 fn probe_binary(path: &std::path::Path) -> Result<(), String> {
     let mut cmd = Command::new(path);
-    cmd.arg("--version").stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -123,12 +181,22 @@ fn proxy() -> &'static Mutex<Option<crate::local_proxy::Proxy>> {
     static P: OnceLock<Mutex<Option<crate::local_proxy::Proxy>>> = OnceLock::new();
     P.get_or_init(|| Mutex::new(None))
 }
+/// 本客户端启动的 NullClaw 是否仍在运行
+pub fn is_running() -> bool {
+    let mut guard = child().lock().unwrap();
+    match guard.as_mut() {
+        Some(c) => c.try_wait().map(|s| s.is_none()).unwrap_or(false),
+        None => false,
+    }
+}
 pub fn stop() -> Result<(), String> {
     proxy().lock().unwrap().take();
     if let Some(mut c) = child().lock().unwrap().take() {
         let _ = c.kill();
         let _ = c.wait();
     }
+    // 兜底清理上次异常退出留下的同路径进程，避免端口被占用
+    kill_stale_runtime();
     Ok(())
 }
 pub fn start(key: &str) -> Result<String, String> {
@@ -138,17 +206,26 @@ pub fn start(key: &str) -> Result<String, String> {
             return Ok("运行中".into());
         }
     }
+    // 启动前先清理残留，确保 32100/32123 由本次实例独占
+    kill_stale_runtime();
     let cfg = crate::config::read();
     let remote = cfg["base_url"].as_str().ok_or("请先绑定服务")?;
     let model = cfg["model"]
         .as_str()
         .unwrap_or(crate::settings::DEFAULT_MODEL);
     let local = crate::local_proxy::Proxy::start(remote, key)?;
-    configure(
-        &local.base,
-        model,
-        cfg["workspace_only"].as_bool().unwrap_or(true),
-    )?;
+    let thinking = crate::config::thinking_effort(cfg["thinking_level"].as_u64().unwrap_or(4));
+    let access_mode = cfg["access_mode"]
+        .as_u64()
+        .map(|m| m.min(2) as usize)
+        .unwrap_or_else(|| {
+            if cfg["workspace_only"].as_bool().unwrap_or(true) {
+                0
+            } else {
+                1
+            }
+        });
+    configure(&local.base, model, thinking, access_mode)?;
     let local_token = local.token.clone();
     *proxy().lock().unwrap() = Some(local);
     let logs = home().join("runtime.log");
@@ -245,9 +322,7 @@ pub fn install(update: bool) -> Result<String, String> {
     let api = std::env::var("CODING01_RELEASE_API")
         .ok()
         .filter(|u| u.starts_with("https://"))
-        .unwrap_or_else(|| {
-            "https://api.github.com/repos/nullclaw/nullclaw/releases/latest".into()
-        });
+        .unwrap_or_else(|| "https://api.github.com/repos/nullclaw/nullclaw/releases/latest".into());
     let mut release: Option<Value> = None;
     let mut api_errors: Vec<String> = Vec::new();
     for candidate in mirror_urls(&api) {
@@ -416,7 +491,12 @@ pub fn install(update: bool) -> Result<String, String> {
     log_install(&format!("installed: {} -> {}", version, dst.display()));
     Ok(format!("NullClaw {}", version))
 }
-pub fn configure(base: &str, model: &str, workspace_only: bool) -> Result<(), String> {
+pub fn configure(
+    base: &str,
+    model: &str,
+    thinking: &str,
+    access_mode: usize,
+) -> Result<(), String> {
     let path = home().join("config.json");
     let mut v: Value = std::fs::read(&path)
         .ok()
@@ -434,7 +514,7 @@ pub fn configure(base: &str, model: &str, workspace_only: bool) -> Result<(), St
         .unwrap()
         .retain(|k, _| !k.starts_with("custom:http://127.0.0.1:"));
     v["models"]["providers"][&provider] =
-        json!({"base_url":base,"native_tools":true,"user_agent":"01Code/0.2.2"});
+        json!({"base_url":base,"native_tools":true,"user_agent":"01Code/0.0.1"});
     if !v["agents"].is_object() {
         v["agents"] = json!({});
     }
@@ -462,8 +542,22 @@ pub fn configure(base: &str, model: &str, workspace_only: bool) -> Result<(), St
     if !v["autonomy"].is_object() {
         v["autonomy"] = json!({});
     }
-    v["autonomy"]["level"] = json!("supervised");
+    // 0=普通（变更询问）1=自主（风险询问）2=完全访问
+    let (level, workspace_only, max_actions, block_high, block_medium, ask_medium, wildcard) =
+        match access_mode {
+            0 => ("supervised", true, 20, true, false, true, false),
+            1 => ("full", false, 200, true, false, true, false),
+            _ => ("yolo", false, 1000, false, false, false, true),
+        };
+    v["autonomy"]["level"] = json!(level);
     v["autonomy"]["workspace_only"] = json!(workspace_only);
+    v["autonomy"]["max_actions_per_hour"] = json!(max_actions);
+    v["autonomy"]["block_high_risk_commands"] = json!(block_high);
+    v["autonomy"]["block_medium_risk_commands"] = json!(block_medium);
+    v["autonomy"]["require_approval_for_medium_risk"] = json!(ask_medium);
+    v["autonomy"]["allowed_commands"] = if wildcard { json!(["*"]) } else { json!([]) };
+    v["autonomy"]["allowed_paths"] = if wildcard { json!(["*"]) } else { json!([]) };
+    v["reasoning_effort"] = json!(thinking);
     crate::config::private_write(&path, &v)?;
     let mut c = crate::config::read();
     c["token"] = json!(token);
@@ -518,7 +612,7 @@ mod integration_tests {
             install(false)?;
             let remote = format!("http://127.0.0.1:{port}/v1");
             crate::config::write(&json!({"base_url":remote,"model":"test-model"}))?;
-            configure(&remote, "test-model", true)?;
+            configure(&remote, "test-model", "medium", 0)?;
             start("test-key")?;
             let mut ws = crate::transport::ws::Ws::connect(&crate::config::ClientCfg::load());
             let sid = "roundtrip-session".to_string();

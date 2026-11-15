@@ -76,22 +76,6 @@ pub fn gear(p: &Painter, c: Pos2, s: f32, color: Color32) {
     p.add(Shape::circle_filled(c, s * 0.08, color));
 }
 
-pub fn sliders(p: &Painter, c: Pos2, s: f32, color: Color32) {
-    for (i, dy) in [-0.28f32, 0.0, 0.28].iter().enumerate() {
-        let y = c.y + dy * s;
-        p.add(Shape::line_segment(
-            [Pos2::new(c.x - s * 0.42, y), Pos2::new(c.x + s * 0.42, y)],
-            Stroke::new(1.5_f32, color),
-        ));
-        let x = match i {
-            0 => c.x + s * 0.16,
-            1 => c.x - s * 0.2,
-            _ => c.x + s * 0.3,
-        };
-        p.add(Shape::circle_filled(Pos2::new(x, y), s * 0.1, color));
-    }
-}
-
 pub fn plus(p: &Painter, c: Pos2, s: f32, color: Color32) {
     p.add(Shape::line_segment(
         [Pos2::new(c.x - s * 0.4, c.y), Pos2::new(c.x + s * 0.4, c.y)],
@@ -119,29 +103,60 @@ pub fn sparkle(p: &Painter, c: Pos2, s: f32, color: Color32) {
     p.add(Shape::convex_polygon(pts, color, Stroke::NONE));
 }
 
-pub fn doc(p: &Painter, c: Pos2, s: f32, color: Color32) {
-    let r = Rect::from_center_size(c, Vec2::new(s * 0.62, s * 0.8));
-    p.add(Shape::rect_filled(r, Rounding::same(2.0), color));
+/// 终端 — shell/命令工具
+/// 盾牌 — 普通/受限访问
+pub fn shield(p: &Painter, c: Pos2, s: f32, color: Color32) {
+    let st = Stroke::new(1.3_f32, color);
+    let pts = vec![
+        Pos2::new(c.x, c.y - s * 0.38),
+        Pos2::new(c.x + s * 0.32, c.y - s * 0.22),
+        Pos2::new(c.x + s * 0.28, c.y + s * 0.14),
+        Pos2::new(c.x, c.y + s * 0.38),
+        Pos2::new(c.x - s * 0.28, c.y + s * 0.14),
+        Pos2::new(c.x - s * 0.32, c.y - s * 0.22),
+    ];
+    p.add(Shape::convex_polygon(pts, Color32::TRANSPARENT, st));
+}
+
+/// 警告三角 — 有风险的访问模式
+pub fn warning(p: &Painter, c: Pos2, s: f32, color: Color32) {
+    let st = Stroke::new(1.3_f32, color);
+    let pts = vec![
+        Pos2::new(c.x, c.y - s * 0.4),
+        Pos2::new(c.x + s * 0.4, c.y + s * 0.32),
+        Pos2::new(c.x - s * 0.4, c.y + s * 0.32),
+    ];
+    p.add(Shape::convex_polygon(pts, Color32::TRANSPARENT, st));
     p.add(Shape::line_segment(
         [
-            Pos2::new(r.left() + s * 0.14, c.y - s * 0.12),
-            Pos2::new(r.right() - s * 0.12, c.y - s * 0.12),
+            Pos2::new(c.x, c.y - s * 0.1),
+            Pos2::new(c.x, c.y + s * 0.12),
         ],
-        Stroke::new(1.2_f32, Color32::WHITE),
+        st,
+    ));
+    p.add(Shape::circle_filled(
+        Pos2::new(c.x, c.y + s * 0.23),
+        s * 0.045,
+        color,
+    ));
+}
+
+/// 对勾 — 工具完成
+pub fn check(p: &Painter, c: Pos2, s: f32, color: Color32) {
+    let st = Stroke::new(1.6_f32, color);
+    p.add(Shape::line_segment(
+        [
+            Pos2::new(c.x - s * 0.34, c.y + s * 0.02),
+            Pos2::new(c.x - s * 0.08, c.y + s * 0.28),
+        ],
+        st,
     ));
     p.add(Shape::line_segment(
         [
-            Pos2::new(r.left() + s * 0.14, c.y + s * 0.02),
-            Pos2::new(r.right() - s * 0.12, c.y + s * 0.02),
+            Pos2::new(c.x - s * 0.08, c.y + s * 0.28),
+            Pos2::new(c.x + s * 0.36, c.y - s * 0.3),
         ],
-        Stroke::new(1.2_f32, Color32::WHITE),
-    ));
-    p.add(Shape::line_segment(
-        [
-            Pos2::new(r.left() + s * 0.14, c.y + s * 0.16),
-            Pos2::new(r.right() - s * 0.12, c.y + s * 0.16),
-        ],
-        Stroke::new(1.2_f32, Color32::WHITE),
+        st,
     ));
 }
 
@@ -163,16 +178,6 @@ pub fn copy(p: &Painter, c: Pos2, s: f32, color: Color32) {
 }
 
 /// 三点更多
-pub fn more(p: &Painter, c: Pos2, s: f32, color: Color32) {
-    for dx in [-0.32f32, 0.0, 0.32] {
-        p.add(Shape::circle_filled(
-            Pos2::new(c.x + dx * s, c.y),
-            s * 0.09,
-            color,
-        ));
-    }
-}
-
 /// 下拉箭头
 pub fn chevron_down(p: &Painter, c: Pos2, s: f32, color: Color32) {
     let w = s * 0.34;
@@ -190,6 +195,23 @@ pub fn chevron_down(p: &Painter, c: Pos2, s: f32, color: Color32) {
         ],
         Stroke::new(1.4_f32, color),
     ));
+}
+
+/// 用户头像(头 + 肩)
+pub fn user(p: &Painter, c: Pos2, s: f32, color: Color32) {
+    p.add(Shape::circle_stroke(
+        Pos2::new(c.x, c.y - s * 0.16),
+        s * 0.2,
+        Stroke::new(1.4_f32, color),
+    ));
+    let mut pts = Vec::new();
+    for i in 0..=12 {
+        let t = i as f32 / 12.0;
+        let x = c.x + (t * 2.0 - 1.0) * s * 0.36;
+        let y = c.y + s * 0.36 - (1.0 - (t * 2.0 - 1.0).powi(2)) * s * 0.19;
+        pts.push(Pos2::new(x, y));
+    }
+    p.add(Shape::line(pts, Stroke::new(1.4_f32, color)));
 }
 
 /// 会话状态点

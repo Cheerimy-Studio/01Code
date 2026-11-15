@@ -14,14 +14,20 @@ struct History {
     transcripts: HashMap<String, Vec<Item>>,
     active: String,
 }
-pub fn load() -> Option<(Vec<Session>, HashMap<String, Vec<Item>>, String)> {
-    let f = std::fs::File::open(crate::config::data_dir().join("history.json")).ok()?;
+fn read_history(path: &std::path::Path) -> Option<History> {
+    let f = std::fs::File::open(path).ok()?;
     let mut bytes = Vec::new();
     f.take(16 * 1024 * 1024 + 1).read_to_end(&mut bytes).ok()?;
     if bytes.len() > 16 * 1024 * 1024 {
         return None;
     }
-    let mut h: History = serde_json::from_slice(&bytes).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+pub fn load() -> Option<(Vec<Session>, HashMap<String, Vec<Item>>, String)> {
+    let dir = crate::config::data_dir();
+    // 主文件损坏时回退到上一次有效快照，避免误判为空历史后覆盖
+    let mut h = read_history(&dir.join("history.json"))
+        .or_else(|| read_history(&dir.join("history.json.bak")))?;
     h.sessions.truncate(100);
     h.transcripts
         .retain(|id, _| h.sessions.iter().any(|s| &s.sid == id));
@@ -64,6 +70,12 @@ fn snapshot(model: &crate::model::Model) -> serde_json::Value {
 fn write(path: &std::path::Path, v: &serde_json::Value) {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK.lock().unwrap();
+    // 只把可解析的上一版留作备份，防止损坏文件覆盖掉最后的有效历史
+    if let Ok(bytes) = std::fs::read(path) {
+        if serde_json::from_slice::<History>(&bytes).is_ok() {
+            let _ = std::fs::write(path.with_file_name("history.json.bak"), &bytes);
+        }
+    }
     let _ = crate::config::private_write(path, v);
 }
 fn sender() -> &'static SyncSender<serde_json::Value> {

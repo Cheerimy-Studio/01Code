@@ -34,6 +34,11 @@ struct App {
     test_save_at: Option<std::time::Instant>,
     /// 测试钩子:启动后附加一个文件/图片
     attach_path: Option<std::path::PathBuf>,
+    /// 测试钩子:启动完成后自动发起网页登录
+    auto_login: bool,
+    auto_login_at: Option<std::time::Instant>,
+    /// 测试钩子:启动后切到空会话(等模拟器初始事件结束)
+    new_task_at: Option<std::time::Instant>,
     screenshot_at: std::time::Instant,
     screenshot_requested: bool,
     history_at: std::time::Instant,
@@ -77,6 +82,10 @@ impl App {
         if !use_sim {
             if !model.settings.key_configured {
                 model.modal = Some(model::Modal::Settings);
+                model.settings.clear_status();
+            } else {
+                // 账户信息与运行时启动并行，用户名/余额不必等 NullClaw 就绪
+                model.settings.sync_account();
             }
             model.settings.bootstrap();
         }
@@ -95,6 +104,11 @@ impl App {
             attach_path: std::env::var("CODING01_ATTACH")
                 .ok()
                 .map(std::path::PathBuf::from),
+            auto_login: std::env::var("CODING01_LOGIN").is_ok(),
+            auto_login_at: None,
+            new_task_at: std::env::var("CODING01_NEW")
+                .is_ok()
+                .then(std::time::Instant::now),
         }
     }
 }
@@ -188,9 +202,32 @@ impl eframe::App for App {
             }
         }
         for (title, text) in self.model.settings.tick() {
+            // 从设置页打开诊断/能力等窗口时记住来源，关闭后回到原页面
+            if self.model.modal != Some(model::Modal::Info) {
+                self.model.info_return = self.model.modal.clone();
+            }
             self.model.info_title = title;
             self.model.info_text = text;
             self.model.modal = Some(model::Modal::Info);
+        }
+        // 测试钩子:准备完成后自动发起一次网页登录(便于真机验证设备码流程)
+        if self.auto_login && !self.model.settings.busy {
+            let started = *self
+                .auto_login_at
+                .get_or_insert_with(std::time::Instant::now);
+            if started.elapsed().as_secs() >= 2 {
+                self.auto_login = false;
+                self.model.settings.tab = 0;
+                self.model.modal = Some(model::Modal::Settings);
+                self.model.settings.login();
+            }
+        }
+        // 测试钩子:模拟器初始事件结束后切到空会话,用于检查首页布局
+        if let Some(t) = self.new_task_at {
+            if t.elapsed().as_secs() >= 2 {
+                self.model.new_task();
+                self.new_task_at = None;
+            }
         }
         if std::mem::take(&mut self.model.settings.reconnect) {
             self.model.request_reconnect = true;
@@ -269,6 +306,11 @@ impl eframe::App for App {
         } else {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // 正常关窗时一并停止本客户端启动的 NullClaw 与本地转发
+        let _ = runtime::stop();
     }
 }
 
@@ -388,8 +430,58 @@ fn fit_size(w: f32, h: f32) -> [f32; 2] {
     [w, h]
 }
 
+/// 单实例：重复启动时聚焦已有窗口，避免多个窗口/遮罩叠加
+#[cfg(windows)]
+fn acquire_single_instance() -> bool {
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+    let name: Vec<u16> = "Local\\01Code.Client.SingleInstance\0"
+        .encode_utf16()
+        .collect();
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    if handle == 0 {
+        // 无法创建互斥量时放行，避免影响正常启动
+        return true;
+    }
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        // 已有实例：能定位到窗口就退出，否则允许本次启动（例如旧实例已无窗口）
+        !focus_existing_window()
+    } else {
+        true
+    }
+}
+
+#[cfg(windows)]
+fn focus_existing_window() -> bool {
+    #[link(name = "user32")]
+    extern "system" {
+        fn FindWindowW(class: *const u16, title: *const u16) -> isize;
+        fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
+        fn SetForegroundWindow(hwnd: isize) -> i32;
+    }
+    let title: Vec<u16> = "01 编码\0".encode_utf16().collect();
+    let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+    if hwnd != 0 {
+        unsafe {
+            ShowWindow(hwnd, 9); // SW_RESTORE
+            SetForegroundWindow(hwnd);
+        }
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(not(windows))]
+fn acquire_single_instance() -> bool {
+    true
+}
+
 fn main() -> eframe::Result<()> {
     enable_dpi_awareness();
+    if !acquire_single_instance() {
+        return Ok(());
+    }
     let [w, h] = if std::env::var("CODING01_NARROW").is_ok() {
         [760.0, 560.0]
     } else {
@@ -401,6 +493,8 @@ fn main() -> eframe::Result<()> {
             .with_inner_size([w, h])
             .with_min_inner_size([640.0, 420.0])
             .with_icon(logo::window_icon()),
+        // 不恢复上次窗口位置，避免显示器/缩放变化后窗口落在屏幕外
+        persist_window: false,
         ..Default::default()
     };
     eframe::run_native("01 编码", options, Box::new(|cc| Box::new(App::new(cc))))

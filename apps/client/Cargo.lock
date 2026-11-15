@@ -876,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "coding01"
-version = "0.2.2"
+version = "0.0.1"
 dependencies = [
  "chrono",
  "eframe",
@@ -892,6 +892,7 @@ dependencies = [
  "subtle",
  "tiny_http",
  "tungstenite",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

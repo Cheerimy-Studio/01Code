@@ -1,9 +1,10 @@
 use crate::{
+    icons,
     model::{Modal, Model},
-    settings::DEFAULT_BASE_URL,
     theme as t,
 };
-use eframe::egui::{self, Align2, RichText, Stroke, Vec2};
+use chrono::TimeZone;
+use eframe::egui::{self, Align2, RichText, Sense, Stroke, Vec2};
 
 pub fn show(ctx: &egui::Context, model: &mut Model) {
     if model.modal.is_some() {
@@ -33,6 +34,24 @@ fn field(ui: &mut egui::Ui, label: &str, value: &mut String, password: bool, hin
             .hint_text(hint),
     );
     ui.add_space(8.0);
+}
+fn status_color(status: &str) -> egui::Color32 {
+    const BAD: [&str; 9] = [
+        "失败",
+        "错误",
+        "过期",
+        "拒绝",
+        "不可用",
+        "不稳定",
+        "无效",
+        "不一致",
+        "未启用",
+    ];
+    if BAD.iter().any(|k| status.contains(k)) {
+        t::DEL_TX
+    } else {
+        t::MUTED
+    }
 }
 fn settings_window(ctx: &egui::Context, model: &mut Model) {
     let screen = ctx.screen_rect().size();
@@ -84,9 +103,10 @@ fn settings_window(ctx: &egui::Context, model: &mut Model) {
             let s = &mut model.settings;
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 24.0;
-                for (i, label) in ["账户", "模型", "运行环境"].iter().enumerate() {
+                for (i, label) in ["账户", "运行环境"].iter().enumerate() {
                     if ui.selectable_label(s.tab == i, *label).clicked() {
                         s.tab = i;
+                        s.clear_status();
                     }
                 }
             });
@@ -101,241 +121,420 @@ fn settings_window(ctx: &egui::Context, model: &mut Model) {
                     ui.add_space(16.0);
                     match s.tab {
                         0 => {
-                            ui.heading(if s.key_configured {
-                                "言灵中转"
-                            } else {
-                                "连接言灵中转"
-                            });
-                            ui.add_space(12.0);
-                            ui.label(
-                                RichText::new(if s.key_configured {
-                                    "已连接言灵中转，模型列表与上下文会自动同步"
+                            ui.horizontal(|ui| {
+                                ui.heading(if s.key_configured {
+                                    "言灵中转"
                                 } else {
-                                    "使用浏览器确认设备码即可登录，无需手动填写 Key"
-                                })
-                                .size(12.0)
-                                .color(t::MUTED),
-                            );
-                            if let Some(name) = s.account["username"].as_str() {
-                                ui.add_space(6.0);
-                                ui.label(RichText::new(name).size(15.0).strong());
+                                    "连接言灵中转"
+                                });
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if s.key_configured {
+                                            egui::Frame::none()
+                                                .fill(t::GRN_CHIP_BG)
+                                                .stroke(Stroke::new(1.0_f32, t::GRN_CHIP_BR))
+                                                .rounding(999.0)
+                                                .inner_margin(egui::Margin::symmetric(9.0, 3.0))
+                                                .show(ui, |ui| {
+                                                    ui.label(
+                                                        RichText::new("已连接")
+                                                            .size(11.0)
+                                                            .color(t::GRN_CHIP_TX),
+                                                    );
+                                                });
+                                        }
+                                    },
+                                );
+                            });
+                            if !s.key_configured {
+                                ui.add_space(8.0);
                                 ui.label(
-                                    RichText::new(format!(
-                                        "余额  ¥{:.4}",
-                                        s.account["balance"].as_f64().unwrap_or(0.0)
-                                    ))
-                                    .size(12.5)
-                                    .color(t::MUTED),
+                                    RichText::new("浏览器确认验证码即可登录，无需填写 API Key")
+                                        .size(12.0)
+                                        .color(t::MUTED),
                                 );
                             }
-                            ui.add_enabled_ui(!s.busy, |ui| {
-                                if ui
-                                    .add_sized(
-                                        [180.0, 40.0],
-                                        egui::Button::new(
-                                            RichText::new(if s.key_configured {
-                                                "重新登录"
-                                            } else {
-                                                "在浏览器中登录"
-                                            })
-                                            .color(egui::Color32::WHITE),
-                                        )
-                                        .fill(t::SKY)
-                                        .rounding(8.0),
-                                    )
-                                    .clicked()
-                                {
-                                    s.login();
-                                }
-                            });
-                            if !s.device_code.is_empty() {
+                            if s.key_configured && !s.logging_in {
                                 ui.add_space(14.0);
+                                let name = s.account_name();
+                                let name = if name.is_empty() {
+                                    "已登录账户".to_string()
+                                } else {
+                                    name
+                                };
+                                let balance = s.account["balance"].as_f64().unwrap_or(0.0);
                                 egui::Frame::none()
                                     .fill(t::PANEL)
                                     .stroke(Stroke::new(1.0_f32, t::BORDER))
-                                    .rounding(10.0)
+                                    .rounding(12.0)
                                     .inner_margin(egui::Margin::symmetric(14.0, 12.0))
                                     .show(ui, |ui| {
                                         ui.set_width(ui.available_width());
-                                        ui.label(RichText::new("在浏览器中确认验证码").size(11.5).color(t::FAINT));
-                                        ui.add_space(2.0);
+                                        ui.allocate_ui_with_layout(
+                                            Vec2::new(ui.available_width(), 53.0),
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                let (r, _) = ui.allocate_exact_size(
+                                                    Vec2::splat(40.0),
+                                                    Sense::hover(),
+                                                );
+                                                ui.painter().circle_filled(
+                                                    r.center(),
+                                                    20.0,
+                                                    t::SKY_CHIP_BG,
+                                                );
+                                                icons::user(
+                                                    &ui.painter_at(r),
+                                                    r.center(),
+                                                    20.0,
+                                                    t::SKY_DEEP,
+                                                );
+                                                ui.add_space(12.0);
+                                                ui.vertical(|ui| {
+                                                    ui.add_space(5.0);
+                                                    ui.label(
+                                                        RichText::new(name)
+                                                            .size(15.5)
+                                                            .color(t::TEXT)
+                                                            .strong(),
+                                                    );
+                                                    ui.add_space(3.0);
+                                                    egui::Frame::none()
+                                                        .fill(t::SELECTED)
+                                                        .stroke(Stroke::new(1.0_f32, t::BORDER))
+                                                        .rounding(6.0)
+                                                        .inner_margin(egui::Margin::symmetric(
+                                                            7.0, 2.0,
+                                                        ))
+                                                        .show(ui, |ui| {
+                                                            ui.label(
+                                                                RichText::new(
+                                                                    if s.account.is_null() {
+                                                                        "正在同步…".to_string()
+                                                                    } else {
+                                                                        format!(
+                                                                            "余额 ¥{balance:.2}"
+                                                                        )
+                                                                    },
+                                                                )
+                                                                .size(10.5)
+                                                                .color(t::MUTED),
+                                                            );
+                                                        });
+                                                });
+                                            },
+                                        );
+                                    });
+                            }
+                            ui.add_space(14.0);
+                            egui::Frame::none().show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                if s.key_configured && !s.logging_in {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 10.0;
+                                        ui.add_enabled_ui(!s.busy && !s.syncing, |ui| {
+                                            if ui
+                                                .add_sized(
+                                                    [104.0, 34.0],
+                                                    egui::Button::new(
+                                                        RichText::new("重新登录")
+                                                            .size(12.5)
+                                                            .color(t::TEXT2),
+                                                    )
+                                                    .fill(t::WHITE)
+                                                    .stroke(Stroke::new(1.0_f32, t::BORDER))
+                                                    .rounding(8.0),
+                                                )
+                                                .clicked()
+                                            {
+                                                s.login();
+                                            }
+                                            if ui
+                                                .add_sized(
+                                                    [92.0, 34.0],
+                                                    egui::Button::new(
+                                                        RichText::new("退出登录")
+                                                            .size(12.5)
+                                                            .color(t::DEL_TX),
+                                                    )
+                                                    .fill(t::WHITE)
+                                                    .stroke(Stroke::new(1.0_f32, t::BORDER))
+                                                    .rounding(8.0),
+                                                )
+                                                .clicked()
+                                            {
+                                                s.logout();
+                                            }
+                                            if ui
+                                                .add_sized(
+                                                    [92.0, 34.0],
+                                                    egui::Button::new(
+                                                        RichText::new("刷新账户")
+                                                            .size(12.5)
+                                                            .color(t::TEXT2),
+                                                    )
+                                                    .fill(t::WHITE)
+                                                    .stroke(Stroke::new(1.0_f32, t::BORDER))
+                                                    .rounding(8.0),
+                                                )
+                                                .clicked()
+                                            {
+                                                s.sync_account();
+                                            }
+                                        });
+                                    });
+                                } else if s.logging_in {
+                                    let has_url = !s.verification_uri.is_empty();
+                                    ui.add_enabled_ui(has_url, |ui| {
+                                        if ui
+                                            .add_sized(
+                                                [200.0, 42.0],
+                                                egui::Button::new(
+                                                    RichText::new(if has_url {
+                                                        "在浏览器中打开"
+                                                    } else {
+                                                        "正在获取验证码…"
+                                                    })
+                                                    .size(13.5)
+                                                    .color(egui::Color32::WHITE),
+                                                )
+                                                .fill(if has_url { t::SKY } else { t::FAINT })
+                                                .rounding(9.0),
+                                            )
+                                            .clicked()
+                                        {
+                                            let _ = open::that(&s.verification_uri);
+                                        }
+                                    });
+                                    ui.add_space(8.0);
+                                    ui.label(
+                                        RichText::new(if has_url {
+                                            "点击上方按钮在浏览器中打开授权页"
+                                        } else {
+                                            "验证码生成后，可点击上方按钮打开授权页"
+                                        })
+                                        .size(11.0)
+                                        .color(t::FAINT),
+                                    );
+                                } else {
+                                    ui.add_enabled_ui(!s.busy && !s.syncing, |ui| {
+                                        if ui
+                                            .add_sized(
+                                                [200.0, 42.0],
+                                                egui::Button::new(
+                                                    RichText::new("在浏览器中登录")
+                                                        .size(13.5)
+                                                        .color(egui::Color32::WHITE),
+                                                )
+                                                .fill(t::SKY)
+                                                .rounding(9.0),
+                                            )
+                                            .clicked()
+                                        {
+                                            s.login();
+                                        }
+                                    });
+                                    ui.add_space(8.0);
+                                    ui.label(
+                                        RichText::new("点击上方按钮在浏览器中打开授权页")
+                                            .size(11.0)
+                                            .color(t::FAINT),
+                                    );
+                                }
+                            });
+                            if !s.device_code.is_empty() {
+                                ui.add_space(12.0);
+                                egui::Frame::none()
+                                    .fill(t::PANEL)
+                                    .stroke(Stroke::new(1.0_f32, t::BORDER))
+                                    .rounding(12.0)
+                                    .inner_margin(egui::Margin::symmetric(16.0, 14.0))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new("浏览器验证码")
+                                                    .size(11.5)
+                                                    .color(t::FAINT),
+                                            );
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if let Some(rem) = s.device_remaining() {
+                                                        let color = if rem < 60 {
+                                                            t::DEL_TX
+                                                        } else {
+                                                            t::MUTED
+                                                        };
+                                                        ui.label(
+                                                            RichText::new(format!(
+                                                                "剩余 {:02}:{:02}",
+                                                                rem / 60,
+                                                                rem % 60
+                                                            ))
+                                                            .size(11.5)
+                                                            .color(color),
+                                                        );
+                                                    }
+                                                },
+                                            );
+                                        });
+                                        ui.add_space(3.0);
                                         ui.label(
                                             RichText::new(&s.device_code)
-                                                .size(26.0)
+                                                .size(30.0)
                                                 .monospace()
                                                 .strong()
                                                 .color(t::TEXT),
                                         );
-                                        ui.add_space(6.0);
+                                        ui.add_space(3.0);
                                         ui.horizontal(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 10.0;
-                                            if ui.button("打开授权页").clicked() {
-                                                let _ = open::that(&s.verification_uri);
-                                            }
-                                            if ui.button("取消登录").clicked() {
-                                                s.cancel_login();
+                                            if s.busy {
+                                                ui.add(
+                                                    egui::Spinner::new().size(14.0).color(t::MUTED),
+                                                );
+                                                ui.add_space(1.0);
+                                                ui.label(
+                                                    RichText::new("等待浏览器确认…")
+                                                        .size(11.5)
+                                                        .color(t::MUTED),
+                                                );
+                                            } else {
+                                                ui.label(
+                                                    RichText::new(
+                                                        "在浏览器中确认后，此窗口会自动完成登录",
+                                                    )
+                                                    .size(11.0)
+                                                    .color(t::FAINT),
+                                                );
                                             }
                                         });
-                                    });
-                            }
-                            ui.add_space(16.0);
-                            egui::Frame::none()
-                                .fill(t::PANEL)
-                                .stroke(Stroke::new(1.0_f32, t::BORDER))
-                                .rounding(10.0)
-                                .inner_margin(egui::Margin::symmetric(12.0, 10.0))
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new("服务地址").size(11.5).color(t::FAINT));
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            ui.label(
-                                                RichText::new(DEFAULT_BASE_URL)
-                                                    .monospace()
-                                                    .size(12.0)
-                                                    .color(t::TEXT2),
-                                            );
-                                        });
-                                    });
-                                    ui.label(
-                                        RichText::new("已固定为言灵中转，无需手动配置")
-                                            .size(11.0)
-                                            .color(t::FAINT),
-                                    );
-                                });
-                            if s.key_configured {
-                                ui.add_space(12.0);
-                                ui.add_enabled_ui(!s.busy, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 12.0;
-                                        if ui.button("刷新账户").clicked() {
-                                            s.sync();
-                                        }
-                                        if ui.button("撤销设备登录").clicked() {
-                                            s.logout();
-                                        }
-                                    });
-                                });
-                            }
-                            if let Some(rows) = s.usage.as_array() {
-                                ui.add_space(20.0);
-                                ui.label(RichText::new("近 7 天用量").strong());
-                                egui::Grid::new("usage")
-                                    .num_columns(3)
-                                    .spacing([24.0, 8.0])
-                                    .show(ui, |ui| {
-                                        ui.label(RichText::new("日期").size(11.5).color(t::FAINT));
-                                        ui.label(RichText::new("请求").size(11.5).color(t::FAINT));
-                                        ui.label(RichText::new("费用").size(11.5).color(t::FAINT));
-                                        ui.end_row();
-                                        for r in rows {
-                                            ui.label(r["day"].as_str().unwrap_or(""));
-                                            ui.label(r["requests"].to_string());
-                                            ui.label(format!(
-                                                "¥{:.4}",
-                                                r["cost"].as_f64().unwrap_or(0.0)
-                                            ));
-                                            ui.end_row();
-                                        }
-                                    });
-                            }
-                        }
-                        1 => {
-                            ui.heading("模型");
-                            ui.add_space(14.0);
-                            ui.add_enabled_ui(!s.busy, |ui| {
-                                ui.label(RichText::new("当前模型").size(11.5).color(t::FAINT));
-                                ui.add_space(6.0);
-                                egui::Frame::none()
-                                    .fill(t::WHITE)
-                                    .stroke(Stroke::new(1.0_f32, t::BORDER))
-                                    .rounding(8.0)
-                                    .inner_margin(egui::Margin::symmetric(10.0, 6.0))
-                                    .show(ui, |ui| {
-                                        ui.set_width(ui.available_width() - 8.0);
-                                        if s.models.is_empty() {
-                                            ui.add(
-                                                egui::TextEdit::singleline(&mut s.model)
-                                                    .frame(false)
-                                                    .hint_text("输入模型名称")
-                                                    .desired_width(f32::INFINITY),
-                                            );
-                                        } else {
-                                            egui::ComboBox::from_id_source("gateway-model")
-                                                .selected_text(&s.model)
-                                                .width(ui.available_width() - 12.0)
-                                                .show_ui(ui, |ui| {
-                                                    for m in &s.models {
-                                                        ui.selectable_value(
-                                                            &mut s.model,
-                                                            m.clone(),
-                                                            m,
-                                                        );
-                                                    }
-                                                });
-                                        }
-                                    });
-                                let meta = s.model_meta.get(&s.model).cloned();
-                                if let Some(meta) = meta {
-                                    let mut parts = Vec::new();
-                                    if meta.ctx > 0 {
-                                        parts.push(format!("上下文 {}", meta.ctx));
-                                    }
-                                    if meta.out > 0 {
-                                        parts.push(format!("输出上限 {}", meta.out));
-                                    }
-                                    if meta.tps > 0 {
-                                        parts.push(format!("约 {} tok/s", meta.tps));
-                                    }
-                                    if !parts.is_empty() {
-                                        ui.label(
-                                            RichText::new(parts.join(" · "))
-                                                .size(11.5)
-                                                .color(t::FAINT),
+                                        ui.add_space(10.0);
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui
+                                                    .add(
+                                                        egui::Button::new(
+                                                            RichText::new("取消登录")
+                                                                .size(12.0)
+                                                                .color(t::MUTED),
+                                                        )
+                                                        .fill(t::WHITE)
+                                                        .stroke(Stroke::new(1.0_f32, t::BORDER))
+                                                        .rounding(7.0)
+                                                        .min_size(Vec2::new(76.0, 30.0)),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    s.cancel_login();
+                                                }
+                                            },
                                         );
-                                    }
-                                }
-                                ui.label(
-                                    RichText::new("列表每 60 秒自动同步；模型下线会自动切换")
-                                        .size(11.0)
-                                        .color(t::FAINT),
-                                );
+                                    });
+                            }
+                            if s.key_configured && !s.devices.is_empty() {
                                 ui.add_space(14.0);
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 12.0;
-                                    if ui
-                                        .add_sized(
-                                            [108.0, 32.0],
-                                            egui::Button::new(
-                                                RichText::new("应用模型").color(t::WHITE),
-                                            )
-                                            .fill(t::TEXT)
-                                            .rounding(9.0),
-                                        )
-                                        .clicked()
-                                    {
-                                        s.save();
-                                    }
-                                    if ui
-                                        .add_sized(
-                                            [120.0, 32.0],
-                                            egui::Button::new(
-                                                RichText::new("同步模型列表").color(t::TEXT2),
-                                            )
-                                            .fill(t::WHITE)
-                                            .stroke(Stroke::new(1.0_f32, t::BORDER))
-                                            .rounding(9.0),
-                                        )
-                                        .clicked()
-                                    {
-                                        s.sync();
-                                    }
-                                });
-                            });
+                                ui.label(
+                                    RichText::new("已授权设备")
+                                        .size(12.5)
+                                        .strong()
+                                        .color(t::TEXT),
+                                );
+                                for d in &s.devices {
+                                    let created = d["created_at"].as_i64().unwrap_or(0);
+                                    let when = chrono::Local
+                                        .timestamp_opt(created, 0)
+                                        .single()
+                                        .map(|v| v.format("%Y-%m-%d %H:%M").to_string())
+                                        .unwrap_or_default();
+                                    let ip = d["device_ip"].as_str().unwrap_or("—");
+                                    let name = d["name"].as_str().unwrap_or("01Code");
+                                    let name = if name.starts_with("01Code-设备") {
+                                        "01Code"
+                                    } else {
+                                        name
+                                    };
+                                    egui::Frame::none()
+                                        .fill(t::PANEL)
+                                        .stroke(Stroke::new(1.0_f32, t::BORDER))
+                                        .rounding(9.0)
+                                        .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                                        .show(ui, |ui| {
+                                            ui.set_width(ui.available_width());
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    RichText::new(name)
+                                                        .size(12.0)
+                                                        .strong()
+                                                        .color(t::TEXT),
+                                                );
+                                                if d["current"].as_bool().unwrap_or(false) {
+                                                    ui.label(
+                                                        RichText::new("当前设备")
+                                                            .size(10.0)
+                                                            .color(t::GRN_CHIP_TX),
+                                                    );
+                                                }
+                                                if !d["enabled"].as_bool().unwrap_or(true) {
+                                                    ui.label(
+                                                        RichText::new("已撤销")
+                                                            .size(10.0)
+                                                            .color(t::DEL_TX),
+                                                    );
+                                                }
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        ui.label(
+                                                            RichText::new(when)
+                                                                .size(10.5)
+                                                                .color(t::FAINT),
+                                                        );
+                                                    },
+                                                );
+                                            });
+                                            ui.label(
+                                                RichText::new(format!("来源 IP {}", ip))
+                                                    .size(10.5)
+                                                    .color(t::FAINT),
+                                            );
+                                        });
+                                    ui.add_space(5.0);
+                                }
+                            }
                         }
                         _ => {
-                            ui.heading("NullClaw");
-                            ui.add_space(12.0);
+                            ui.horizontal(|ui| {
+                                ui.heading("NullClaw");
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let (text, bg, br, tx) = if s.runtime_running {
+                                            (
+                                                "运行中",
+                                                t::GRN_CHIP_BG,
+                                                t::GRN_CHIP_BR,
+                                                t::GRN_CHIP_TX,
+                                            )
+                                        } else {
+                                            ("已暂停", t::PANEL, t::BORDER, t::MUTED)
+                                        };
+                                        egui::Frame::none()
+                                            .fill(bg)
+                                            .stroke(Stroke::new(1.0_f32, br))
+                                            .rounding(999.0)
+                                            .inner_margin(egui::Margin::symmetric(9.0, 3.0))
+                                            .show(ui, |ui| {
+                                                ui.label(RichText::new(text).size(11.0).color(tx));
+                                            });
+                                    },
+                                );
+                            });
+                            ui.add_space(10.0);
                             ui.add_enabled_ui(!s.busy, |ui| {
                                 ui.horizontal_wrapped(|ui| {
                                     ui.spacing_mut().item_spacing.x = 12.0;
@@ -354,32 +553,42 @@ fn settings_window(ctx: &egui::Context, model: &mut Model) {
                                     if ui
                                         .add_sized(
                                             [92.0, 32.0],
-                                            egui::Button::new("重新启动")
-                                                .fill(t::WHITE)
-                                                .stroke(Stroke::new(1.0_f32, t::BORDER))
-                                                .rounding(9.0),
+                                            egui::Button::new(
+                                                RichText::new(if s.runtime_running {
+                                                    "重新启动"
+                                                } else {
+                                                    "启动"
+                                                })
+                                                .color(if s.runtime_running {
+                                                    t::TEXT2
+                                                } else {
+                                                    egui::Color32::WHITE
+                                                }),
+                                            )
+                                            .fill(if s.runtime_running { t::WHITE } else { t::SKY })
+                                            .stroke(Stroke::new(1.0_f32, t::BORDER))
+                                            .rounding(9.0),
                                         )
                                         .clicked()
                                     {
                                         s.save();
                                     }
-                                    if ui
-                                        .add_sized(
-                                            [72.0, 32.0],
-                                            egui::Button::new("停止")
-                                                .fill(t::WHITE)
-                                                .stroke(Stroke::new(1.0_f32, t::BORDER))
-                                                .rounding(9.0),
-                                        )
-                                        .clicked()
-                                    {
-                                        let _ = crate::runtime::stop();
-                                        s.runtime_status = "已停止".into();
-                                    }
+                                    ui.add_enabled_ui(s.runtime_running, |ui| {
+                                        if ui
+                                            .add_sized(
+                                                [72.0, 32.0],
+                                                egui::Button::new("停止")
+                                                    .fill(t::WHITE)
+                                                    .stroke(Stroke::new(1.0_f32, t::BORDER))
+                                                    .rounding(9.0),
+                                            )
+                                            .clicked()
+                                        {
+                                            s.stop_runtime();
+                                        }
+                                    });
                                 });
                                 ui.add_space(16.0);
-                                ui.checkbox(&mut s.workspace_only, "仅允许访问工作区");
-                                ui.add_space(12.0);
                                 ui.horizontal_wrapped(|ui| {
                                     ui.spacing_mut().item_spacing.x = 12.0;
                                     for (label, args) in [
@@ -465,32 +674,87 @@ fn settings_window(ctx: &egui::Context, model: &mut Model) {
             ui.add_space(8.0);
             ui.separator();
             ui.horizontal_wrapped(|ui| {
-                if s.busy {
+                if s.busy || s.syncing {
                     ui.spinner();
                 }
-                ui.label(RichText::new(&s.status).size(12.0).color(t::MUTED));
+                ui.label(
+                    RichText::new(&s.status)
+                        .size(12.0)
+                        .color(status_color(&s.status)),
+                );
             });
         });
+    // 遮罩也是 Middle 层，点击它时会被置顶；每帧把窗口层拉回最上方
+    ctx.move_to_top(egui::LayerId::new(
+        egui::Order::Middle,
+        egui::Id::new("设置"),
+    ));
     if close || !open || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         model.modal = None;
     }
 }
 fn info_window(ctx: &egui::Context, model: &mut Model) {
-    let mut open = true;
+    let mut close = false;
     let size = ctx.screen_rect().size();
-    egui::Window::new(&model.info_title)
-        .open(&mut open)
+    egui::Window::new("info-window")
+        .title_bar(false)
+        .resizable(false)
+        .collapsible(false)
+        .frame(
+            egui::Frame::window(&ctx.style())
+                .fill(t::WHITE)
+                .rounding(12.0)
+                .shadow(egui::epaint::Shadow {
+                    offset: Vec2::new(0.0, 8.0),
+                    blur: 26.0,
+                    spread: 0.0,
+                    color: egui::Color32::from_rgba_unmultiplied(15, 23, 42, 32),
+                })
+                .inner_margin(16.0),
+        )
         .default_width((size.x - 80.0).min(720.0))
-        .max_height((size.y - 100.0).max(180.0))
+        .max_height((size.y - 120.0).max(200.0))
         .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
         .show(ctx, |ui| {
-            egui::ScrollArea::both().show(ui, |ui| {
-                ui.add(
-                    egui::Label::new(RichText::new(&model.info_text).monospace()).selectable(true),
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(&model.info_title)
+                        .size(18.0)
+                        .color(t::TEXT)
+                        .strong(),
                 );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("关闭").size(12.5).color(t::TEXT2))
+                                .fill(t::WHITE)
+                                .stroke(Stroke::new(1.0_f32, t::BORDER))
+                                .rounding(8.0)
+                                .min_size(Vec2::new(72.0, 30.0)),
+                        )
+                        .clicked()
+                    {
+                        close = true;
+                    }
+                });
             });
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            egui::ScrollArea::both()
+                .max_height((size.y - 230.0).max(120.0))
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(&model.info_text).monospace())
+                            .selectable(true),
+                    );
+                });
         });
-    if !open {
-        model.modal = None;
+    ctx.move_to_top(egui::LayerId::new(
+        egui::Order::Middle,
+        egui::Id::new("info-window"),
+    ));
+    if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        model.modal = model.info_return.take();
     }
 }

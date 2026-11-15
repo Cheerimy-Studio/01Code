@@ -1,5 +1,24 @@
 use serde_json::{json, Value};
 use std::path::PathBuf;
+/// 思考强度等级 → NullClaw 的 reasoning_effort
+pub fn thinking_effort(level: u64) -> &'static str {
+    match level {
+        0 => "minimal",
+        1 => "low",
+        2 => "medium",
+        3 => "high",
+        _ => "xhigh",
+    }
+}
+pub fn thinking_label(level: u64) -> &'static str {
+    match level {
+        0 => "最低",
+        1 => "低",
+        2 => "中",
+        3 => "高",
+        _ => "最高",
+    }
+}
 pub fn data_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("CODING01_HOME") {
         return p.into();

@@ -105,6 +105,7 @@ fn icon_button(ui: &mut egui::Ui, icon: fn(&egui::Painter, Pos2, f32, Color32)) 
 pub fn show(ctx: &egui::Context, model: &mut Model) {
     let mut clicks: Vec<String> = Vec::new();
     let mut deletes: Vec<String> = Vec::new();
+    let mut open_account = false;
     egui::SidePanel::left("left")
         .exact_width(248.0)
         .resizable(false)
@@ -179,15 +180,12 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                 model.settings.cli("扩展", vec!["capabilities".into()]);
             }
             if menu_row(ui, "定时任务", icons::clock) {
-                model.settings.tab = 2;
-                model.modal = Some(Modal::Settings);
-            }
-            if menu_row(ui, "模型", icons::sliders) {
                 model.settings.tab = 1;
+                model.settings.clear_status();
                 model.modal = Some(Modal::Settings);
-                model.settings.sync();
             }
             if menu_row(ui, "设置", icons::gear) {
+                model.settings.clear_status();
                 model.modal = Some(Modal::Settings);
             }
             ui.add_space(6.0);
@@ -222,7 +220,7 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
             }
 
             // 会话列表(为底部用户行预留高度,避免被挤压截断)
-            let user_h = 56.0;
+            let user_h = 66.0;
             let scroll_h = (ui.available_height() - user_h).max(60.0);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -251,43 +249,95 @@ pub fn show(ctx: &egui::Context, model: &mut Model) {
                     }
                 });
 
-            // 底部用户行(手动绘制:头像与文字在分割线与底边之间垂直居中)
-            let (rect, _) =
-                ui.allocate_exact_size(Vec2::new(ui.available_width(), user_h), Sense::hover());
+            // 底部用户行：整行可点击，头像与两行文字在区域内垂直居中
+            let (rect, resp) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), user_h), Sense::click());
             let p = ui.painter_at(rect);
-            let sep_y = rect.top() + 1.0;
-            p.line_segment(
-                [
-                    Pos2::new(rect.left(), sep_y),
-                    Pos2::new(rect.right(), sep_y),
-                ],
-                Stroke::new(1.0_f32, t::BORDER),
-            );
-            // 可用区域:分割线 → 底边,取中点
-            let cy = (sep_y + rect.bottom()) * 0.5;
+            let sep_y = rect.top() + 0.5;
+            if resp.hovered() {
+                p.add(Shape::rect_filled(
+                    rect.shrink2(Vec2::new(0.0, 5.0)),
+                    Rounding::same(8.0),
+                    t::HOVER,
+                ));
+            }
+            let cy = (sep_y + rect.bottom() - 8.0) * 0.5;
+            let connected = model.settings.key_configured;
+            let ax = rect.left() + 16.0;
             p.add(Shape::circle_filled(
-                Pos2::new(rect.left() + 13.0, cy),
-                13.0,
-                t::SKY,
+                Pos2::new(ax, cy),
+                15.0,
+                if connected { t::SKY } else { t::SELECTED },
             ));
-            p.text(
-                Pos2::new(rect.left() + 13.0, cy),
-                egui::Align2::CENTER_CENTER,
-                "0",
-                egui::FontId::proportional(12.0),
-                Color32::WHITE,
+            icons::user(
+                &p,
+                Pos2::new(ax, cy),
+                15.0,
+                if connected { Color32::WHITE } else { t::MUTED },
             );
-            p.text(
-                Pos2::new(rect.left() + 34.0, cy),
-                egui::Align2::LEFT_CENTER,
-                model.settings.account["username"]
-                    .as_str()
-                    .unwrap_or("未绑定账户"),
-                egui::FontId::proportional(13.0),
-                t::TEXT2,
+            // 连接状态点：仅在线时显示，白描边压住头像边缘
+            if connected {
+                let dot = Pos2::new(ax + 10.5, cy + 10.5);
+                p.add(Shape::circle_filled(dot, 4.8, t::PANEL));
+                p.add(Shape::circle_filled(dot, 3.1, t::GRN));
+            }
+            let account_name = model.settings.account_name();
+            let name = if connected {
+                if account_name.is_empty() {
+                    "已登录账户".to_string()
+                } else {
+                    account_name
+                }
+            } else {
+                "未登录".to_string()
+            };
+            let sub = if connected {
+                if model.settings.account.is_null() {
+                    "正在同步账户…"
+                } else {
+                    "已连接言灵中转"
+                }
+            } else {
+                "点击登录言灵中转"
+            };
+            let clip = egui::Rect::from_min_max(
+                Pos2::new(rect.left() + 40.0, rect.top()),
+                Pos2::new(rect.right() - 34.0, rect.bottom()),
             );
+            let pt = ui.painter_at(clip);
+            // 按实际字形高度居中两行文字，避免固定偏移在不同字号/缩放下偏低
+            let name_gal = pt.layout_no_wrap(name, egui::FontId::proportional(13.5), t::TEXT);
+            let sub_gal =
+                pt.layout_no_wrap(sub.to_string(), egui::FontId::proportional(11.0), t::FAINT);
+            let gap = 3.0;
+            let total = name_gal.size().y + gap + sub_gal.size().y;
+            let top = cy - total * 0.5;
+            pt.galley(
+                Pos2::new(rect.left() + 40.0, top),
+                name_gal.clone(),
+                t::TEXT,
+            );
+            pt.galley(
+                Pos2::new(rect.left() + 40.0, top + name_gal.size().y + gap),
+                sub_gal,
+                t::FAINT,
+            );
+            icons::gear(
+                &p,
+                Pos2::new(rect.right() - 15.0, cy),
+                13.0,
+                if resp.hovered() { t::MUTED } else { t::FAINT },
+            );
+            if resp.clicked() {
+                open_account = true;
+            }
         });
 
+    if open_account {
+        model.settings.tab = 0;
+        model.settings.clear_status();
+        model.modal = Some(Modal::Settings);
+    }
     for sid in clicks {
         model.switch_session(&sid);
     }

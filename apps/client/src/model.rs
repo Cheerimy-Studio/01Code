@@ -102,6 +102,10 @@ pub struct Model {
     pub ctx_limit: f32,
     pub model_name: String,
     pub input: String,
+    /// 首页快捷入口点击后请求输入框焦点
+    pub focus_input: bool,
+    /// Ctrl+T 请求打开模型/思考强度弹层
+    pub open_model_picker: bool,
     pub search: String,
     /// 真实网关模式使用独立会话连接
     pub gateway_mode: bool,
@@ -111,6 +115,8 @@ pub struct Model {
     pub last_elapsed: Option<u64>,
     /// 当前弹窗
     pub modal: Option<Modal>,
+    /// 关闭信息窗口后要返回的弹窗（如设置页）
+    pub info_return: Option<Modal>,
     pub settings: SettingsState,
     pub info_title: String,
     pub info_text: String,
@@ -148,11 +154,14 @@ impl Model {
             ctx_limit,
             model_name,
             input: String::new(),
+            focus_input: false,
+            open_model_picker: false,
             search: String::new(),
             gateway_mode: !seed_demo,
             show_search: false,
             last_elapsed: None,
             modal: None,
+            info_return: None,
             settings,
             info_title: String::new(),
             info_text: String::new(),
@@ -312,6 +321,7 @@ impl Model {
 
     pub fn new_task(&mut self) {
         self.history_dirty = true;
+        self.settings.clear_status();
         let ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -568,6 +578,15 @@ impl Model {
             }
             Event::Paired { .. } => {}
             Event::Sys { sid, text } => {
+                // 运行时暂停/未启动时不把重连提示堆进对话
+                if self.settings.key_configured
+                    && !self.settings.runtime_running
+                    && (text.contains("正在连接 NullClaw")
+                        || text.contains("连接中断")
+                        || text.contains("网关已关闭连接"))
+                {
+                    return;
+                }
                 // 连接级消息(sid 为空)路由到当前会话;无会话则先建一个
                 let target = if sid.is_empty() {
                     if self.active_sid.is_empty() {
@@ -588,6 +607,20 @@ impl Model {
 
     pub fn is_busy(&self) -> bool {
         self.streaming || self.running > 0
+    }
+
+    /// 当前会话是否仍在执行(后台会话的忙碌状态不影响当前界面)
+    pub fn active_busy(&self) -> bool {
+        let items = self.transcript();
+        if items.iter().any(|i| match i {
+            Item::Ai(s) => !s.done,
+            Item::Tool(t) => matches!(t.state, ToolState::Pending | ToolState::Running),
+            _ => false,
+        }) {
+            return true;
+        }
+        // 已发送、助手尚未产出内容时也视为执行中
+        self.is_busy() && matches!(items.last(), Some(Item::User(_)))
     }
 
     /// 看门狗:忙碌但长时间无事件 → 判定应答超时并复位
@@ -666,6 +699,8 @@ impl Model {
             if session.title == "新会话" {
                 session.title = display.chars().take(32).collect();
             }
+            // 侧栏显示最近活动时间；网关复用旧会话时避免仍显示多天前
+            session.created_at = chrono::Local::now().timestamp().max(0) as u64;
         }
         self.transcripts
             .entry(sid.clone())
@@ -786,6 +821,7 @@ impl Model {
     pub fn switch_session(&mut self, sid: &str) {
         self.active_sid = sid.to_string();
         self.todo.clear();
+        self.settings.clear_status();
     }
 }
 

@@ -5,3 +5,6 @@ apps/client/target/
 apps/client/shots/
 # downloaded binaries (not part of source)
 downloads/
+
+# release artifacts
+dist/
